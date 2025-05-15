@@ -6,6 +6,7 @@ import fitz  # PyMuPDF
 from PIL import Image
 import io
 from ..config import settings
+from ..utils.langsmith_utils import traced_operation, extract_file_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,10 @@ class ImageExtractor:
         self.min_height = self.config.get("min_height", 50)
         self.supported_formats = self.config.get("supported_formats", ["png", "jpg", "jpeg"])
     
+    @traced_operation(
+        "pdf_image_extraction",
+        metadata_extractor=lambda self, pdf_path, output_dir: extract_file_metadata(pdf_path)
+    )
     def extract_images_from_pdf(self, pdf_path, output_dir):
         """
         Extract all images from a PDF file and save them to the specified directory.
@@ -108,6 +113,7 @@ class ImageExtractor:
         
         return results
     
+    @traced_operation("single_image_extraction")
     def _extract_single_image(self, pdf_document, img_info, page_num, image_counter):
         """
         Extract a single image from PDF.
@@ -147,6 +153,7 @@ class ImageExtractor:
         
         return pil_image
     
+    @traced_operation("image_resize")
     def _resize_image(self, image):
         """
         Resize image if it exceeds maximum dimensions while maintaining aspect ratio.
@@ -173,6 +180,7 @@ class ImageExtractor:
         
         return image
     
+    @traced_operation("image_save")
     def _save_image(self, image, path):
         """
         Save PIL Image to file.

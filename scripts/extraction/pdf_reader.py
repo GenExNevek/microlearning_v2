@@ -5,6 +5,7 @@ import io
 from google import genai
 from google.genai import types
 from ..config import settings
+from ..utils.langsmith_utils import traced_operation, trace_api_call, extract_file_metadata
 
 class PDFReader:
     """Handles PDF reading and interaction with Gemini API."""
@@ -14,7 +15,11 @@ class PDFReader:
         self.api_key = api_key or settings.GEMINI_API_KEY
         self.model_id = model_id or settings.GEMINI_MODEL
         self.client = genai.Client(api_key=self.api_key)
-        
+    
+    @traced_operation(
+        "pdf_reading",
+        metadata_extractor=lambda self, file_path: extract_file_metadata(file_path)
+    )
     def read_pdf_from_path(self, file_path):
         """Read PDF file from local path and return file data."""
         if not os.path.exists(file_path):
@@ -29,6 +34,7 @@ class PDFReader:
         else:
             return self._prepare_file_api_processing(normalized_path)
     
+    @traced_operation("pdf_direct_processing")
     def _prepare_direct_processing(self, file_path):
         """Prepare PDF data for direct processing."""
         with open(file_path, 'rb') as file:
@@ -39,7 +45,8 @@ class PDFReader:
             'path': file_path,
             'normalized_path': file_path  # Keep normalized path for image extraction
         }
-        
+    
+    @traced_operation("pdf_file_api_processing")    
     def _prepare_file_api_processing(self, file_path):
         """Prepare PDF for processing via File API."""
         return {
@@ -47,35 +54,22 @@ class PDFReader:
             'path': file_path,
             'normalized_path': file_path  # Keep normalized path for image extraction
         }
-        
+    
+    @traced_operation("pdf_test_reading")
     def test_pdf_reading(self, pdf_info):
         """Test if Gemini can read the PDF by requesting a simple summary."""
         try:
             if pdf_info['method'] == 'direct':
                 # For direct method (files under 20MB)
-                response = self.client.models.generate_content(
-                    model=self.model_id,
-                    contents=[
-                        types.Part.from_bytes(
-                            data=pdf_info['data'],
-                            mime_type='application/pdf',
-                        ),
-                        "Give me a brief description of what this PDF contains."
-                    ]
+                response = self._generate_content_direct(
+                    pdf_info['data'],
+                    "Give me a brief description of what this PDF contains."
                 )
             else:
                 # For File API method (files over 20MB)
-                file_obj = self.client.files.upload(
-                    file=pdf_info['path'],
-                    config=dict(mime_type='application/pdf')
-                )
-                
-                response = self.client.models.generate_content(
-                    model=self.model_id,
-                    contents=[
-                        file_obj,
-                        "Give me a brief description of what this PDF contains."
-                    ]
+                response = self._generate_content_file_api(
+                    pdf_info['path'],
+                    "Give me a brief description of what this PDF contains."
                 )
                 
             return {
@@ -90,3 +84,30 @@ class PDFReader:
                 'error': str(e),
                 'pdf_info': pdf_info
             }
+    
+    @trace_api_call(model_id=settings.GEMINI_MODEL, operation="generate_content_direct")
+    def _generate_content_direct(self, pdf_data, prompt):
+        """Generate content using direct PDF data."""
+        return self.client.models.generate_content(
+            model=self.model_id,
+            contents=[
+                types.Part.from_bytes(
+                    data=pdf_data,
+                    mime_type='application/pdf',
+                ),
+                prompt
+            ]
+        )
+    
+    @trace_api_call(model_id=settings.GEMINI_MODEL, operation="generate_content_file_api")
+    def _generate_content_file_api(self, file_path, prompt):
+        """Generate content using File API."""
+        file_obj = self.client.files.upload(
+            file=file_path,
+            config=dict(mime_type='application/pdf')
+        )
+        
+        return self.client.models.generate_content(
+            model=self.model_id,
+            contents=[file_obj, prompt]
+        )

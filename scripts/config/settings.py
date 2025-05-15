@@ -12,6 +12,13 @@ load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_MODEL = "gemini-2.5-flash-preview-04-17"
 
+# LangSmith Tracing Configuration
+LANGSMITH_API_KEY = os.getenv("LANGSMITH_API_KEY")
+LANGSMITH_PROJECT = os.getenv("LANGSMITH_PROJECT", "microlearning-extraction")
+LANGSMITH_ENDPOINT = os.getenv("LANGSMITH_ENDPOINT", "https://api.smith.langchain.com")
+LANGSMITH_TRACING_ENABLED = os.getenv("LANGSMITH_TRACING_V2", "true").lower() == "true"
+LANGSMITH_DEBUG = os.getenv("LANGSMITH_DEBUG", "false").lower() == "true"
+
 # Base directory is the microlearning folder
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 

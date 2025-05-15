@@ -29,3 +29,6 @@ original_content_pdf/
 
 # Additional PDF file exclusions
 *.pdf
+
+# Extraction logs
+extraction_log_*.log

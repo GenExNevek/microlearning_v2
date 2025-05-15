@@ -9,6 +9,8 @@ from .markdown_formatter import MarkdownFormatter
 from .file_writer import FileWriter
 from .image_extractor import ImageExtractor
 from ..config import settings
+from ..config.tracing import initialise_tracing
+from ..utils.langsmith_utils import traced_operation, trace_batch_operation, extract_file_metadata
 
 # Configure logging
 logging.basicConfig(
@@ -21,6 +23,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+@traced_operation(
+    "pdf_transformation",
+    metadata_extractor=lambda source_file, target_file: extract_file_metadata(source_file)
+)
 def transform_pdf_to_markdown(source_file, target_file):
     """
     Transform a PDF file to a markdown file.
@@ -57,7 +63,6 @@ def transform_pdf_to_markdown(source_file, target_file):
         metadata = formatter.extract_metadata_from_path(source_file)
         
         # Extract and format the content (this now includes image extraction)
-        # *** CORRECTED: Only pass pdf_info and metadata, not target_file ***
         result = formatter.extract_and_format(pdf_info, metadata)
         
         if result['success']:
@@ -95,6 +100,7 @@ def transform_pdf_to_markdown(source_file, target_file):
         logger.error(f"Exception processing {source_file}: {str(e)}")
         return False
 
+@traced_operation("single_file_processing")
 def process_single_file(pdf_path):
     """Process a single PDF file."""
     # Normalize path
@@ -113,6 +119,7 @@ def process_single_file(pdf_path):
         'failures': [] if success else [pdf_path]
     }
 
+@traced_operation("directory_processing")
 def process_directory(directory_path):
     """Process all PDF files in a directory and its subdirectories."""
     # Normalize path
@@ -133,14 +140,30 @@ def process_directory(directory_path):
     logger.info(f"Processing directory: {source_dir}")
     logger.info(f"Target directory: {target_dir}")
     
-    results = FileWriter.mirror_directory_structure(
-        source_dir, 
-        target_dir,
-        transform_func=transform_pdf_to_markdown
-    )
+    # Use batch tracing
+    with trace_batch_operation(f"directory_{os.path.basename(directory_path)}") as batch_tracer:
+        results = FileWriter.mirror_directory_structure(
+            source_dir, 
+            target_dir,
+            transform_func=lambda src, tgt: _transform_with_progress(src, tgt, batch_tracer)
+        )
     
     return results
 
+def _transform_with_progress(source_file, target_file, batch_tracer):
+    """Transform file with batch progress tracking."""
+    try:
+        success = transform_pdf_to_markdown(source_file, target_file)
+        if success:
+            batch_tracer.update_progress(processed=1)
+        else:
+            batch_tracer.update_progress(failed=1)
+        return success
+    except Exception:
+        batch_tracer.update_progress(failed=1)
+        raise
+
+@traced_operation("batch_processing")
 def process_batch(batch_id=None):
     """
     Process a batch of PDF files.
@@ -171,6 +194,9 @@ def validate_image_extraction():
 
 def main():
     """Main entry point for the extraction script."""
+    # Initialise tracing
+    initialise_tracing()
+    
     parser = argparse.ArgumentParser(description='Extract Rise PDF content to markdown with images.')
     parser.add_argument('--file', help='Single PDF file to process')
     parser.add_argument('--dir', help='Directory containing PDF files to process')

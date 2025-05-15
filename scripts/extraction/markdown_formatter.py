@@ -8,6 +8,7 @@ from google.genai import types  # Add this import
 from ..config.extraction_prompt import get_extraction_prompt
 from ..config import settings
 from .image_extractor import ImageExtractor
+from ..utils.langsmith_utils import traced_operation, extract_file_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +19,8 @@ class MarkdownFormatter:
         """Initialize with a PDFReader instance."""
         self.pdf_reader = pdf_reader
         self.image_extractor = ImageExtractor()
-        
+    
+    @traced_operation("metadata_extraction")
     def extract_metadata_from_path(self, pdf_path):
         """Extract metadata from PDF path components."""
         # Normalize path separators
@@ -69,6 +71,10 @@ class MarkdownFormatter:
             'extraction_date': datetime.now().strftime('%Y-%m-%d')
         }
     
+    @traced_operation(
+        "content_extraction_and_formatting",
+        metadata_extractor=lambda self, pdf_info, metadata=None: extract_file_metadata(pdf_info.get('path', ''))
+    )
     def extract_and_format(self, pdf_info, metadata=None):
         """Extract content from PDF and format as markdown."""
         # If metadata not provided, try to extract from path
@@ -85,26 +91,15 @@ class MarkdownFormatter:
         try:
             if pdf_info['method'] == 'direct':
                 # For direct method (files under 20MB)
-                response = self.pdf_reader.client.models.generate_content(
-                    model=self.pdf_reader.model_id,
-                    contents=[
-                        types.Part.from_bytes(
-                            data=pdf_info['data'],
-                            mime_type='application/pdf',
-                        ),
-                        prompt
-                    ]
+                response = self.pdf_reader._generate_content_direct(
+                    pdf_info['data'],
+                    prompt
                 )
             else:
                 # For File API method (files over 20MB)
-                file_obj = self.pdf_reader.client.files.upload(
-                    file=pdf_info['path'],
-                    config=dict(mime_type='application/pdf')
-                )
-                
-                response = self.pdf_reader.client.models.generate_content(
-                    model=self.pdf_reader.model_id,
-                    contents=[file_obj, prompt]
+                response = self.pdf_reader._generate_content_file_api(
+                    pdf_info['path'],
+                    prompt
                 )
             
             # Get the markdown content from the response
@@ -132,6 +127,7 @@ class MarkdownFormatter:
                 'image_extraction': image_extraction_results
             }
     
+    @traced_operation("image_extraction")
     def _extract_images(self, pdf_info, metadata):
         """Extract images from the PDF file."""
         # Get the PDF path
@@ -181,6 +177,7 @@ class MarkdownFormatter:
         
         return img_assets_dir
     
+    @traced_operation("markdown_post_processing")
     def post_process_markdown(self, content, metadata, image_extraction_results=None):
         """Apply post-processing to the generated markdown."""
         # Check if content has frontmatter, if not add it
