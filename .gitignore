@@ -14,3 +14,18 @@ __pycache__/
 
 # Dependency tracking
 requirements.txt
+
+# Exclude PDF source content directories
+original_content_pdf/
+**/original_content_pdf/
+
+# Exclude generated markdown and image assets
+**/original_content_markdown/**/*-img-assets/
+**/original_content_markdown/**/*-img-assets
+*.jpg
+*.png
+*.jpeg
+*.gif
+
+# Additional PDF file exclusions
+*.pdf
