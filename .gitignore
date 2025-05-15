@@ -1,0 +1,16 @@
+# Virtual Environment
+venv/
+.venv/
+env/
+.env/
+pymupdf-venv/  # Based on the specific venv in the project files
+
+# Python cache and compiled files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Dependency tracking
+requirements.txt
