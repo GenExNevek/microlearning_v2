@@ -1,0 +1,9 @@
+2025-05-15 11:49:19,749 - INFO - Image extraction dependencies are properly installed
+2025-05-15 11:49:19,749 - INFO - Processing single file: original_content_pdf/CON0001_camb_as_physics/MOD0001_camb_as_physics_m1/UNI0003_camb_as_physics_m1_l3.pdf
+2025-05-15 11:49:20,217 - ERROR - Exception processing original_content_pdf\CON0001_camb_as_physics\MOD0001_camb_as_physics_m1\UNI0003_camb_as_physics_m1_l3.pdf: MarkdownFormatter.extract_and_format() takes from 2 to 3 positional arguments but 4 were given
+2025-05-15 11:49:20,218 - INFO - Processing complete in 0:00:00.468230
+2025-05-15 11:49:20,218 - INFO - Successes: 0
+2025-05-15 11:49:20,218 - INFO - Failures: 1
+2025-05-15 11:49:20,219 - INFO - Failed files:
+2025-05-15 11:49:20,219 - INFO -   - original_content_pdf\CON0001_camb_as_physics\MOD0001_camb_as_physics_m1\UNI0003_camb_as_physics_m1_l3.pdf
+2025-05-15 11:49:20,219 - INFO - Use --check-deps to verify all dependencies are installed correctly.

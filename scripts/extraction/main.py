@@ -37,7 +37,7 @@ def transform_pdf_to_markdown(source_file, target_file):
         return False
         
     # Change file extension from .pdf to .md
-    target_file = os.path.normpath(target_file.replace('.pdf', '.md'))
+    target_file = target_file.replace('.pdf', '.md')
     
     # Get directories
     target_dir = os.path.dirname(target_file)
@@ -57,7 +57,8 @@ def transform_pdf_to_markdown(source_file, target_file):
         metadata = formatter.extract_metadata_from_path(source_file)
         
         # Extract and format the content (this now includes image extraction)
-        result = formatter.extract_and_format(pdf_info, metadata, target_file)
+        # *** CORRECTED: Only pass pdf_info and metadata, not target_file ***
+        result = formatter.extract_and_format(pdf_info, metadata)
         
         if result['success']:
             # Write the markdown file
