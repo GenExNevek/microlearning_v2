@@ -16,10 +16,6 @@ class PDFReader:
         self.model_id = model_id or settings.GEMINI_MODEL
         self.client = genai.Client(api_key=self.api_key)
     
-    @traced_operation(
-        "pdf_reading",
-        metadata_extractor=lambda self, file_path: extract_file_metadata(file_path)
-    )
     def read_pdf_from_path(self, file_path):
         """Read PDF file from local path and return file data."""
         if not os.path.exists(file_path):
@@ -34,7 +30,6 @@ class PDFReader:
         else:
             return self._prepare_file_api_processing(normalized_path)
     
-    @traced_operation("pdf_direct_processing")
     def _prepare_direct_processing(self, file_path):
         """Prepare PDF data for direct processing."""
         with open(file_path, 'rb') as file:

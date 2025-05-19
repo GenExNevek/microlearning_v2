@@ -15,7 +15,8 @@ def traced_operation(
     operation_type: str,
     name: Optional[str] = None,
     metadata_extractor: Optional[Callable] = None,
-    run_type: str = "chain"
+    run_type: str = "chain",
+    visibility: str = "visible"
 ):
     """
     Decorator to trace operations with LangSmith.
@@ -25,21 +26,38 @@ def traced_operation(
         name: Custom name for the trace (defaults to function name)
         metadata_extractor: Function to extract metadata from arguments
         run_type: LangSmith run type (chain, llm, tool, etc.)
+        visibility: Controls trace visibility: "visible" (default) or "hidden"
     """
     def decorator(func: Callable) -> Callable:
         @functools.wraps(func)
-        def wrapper(*args, **kwargs):
+        def wrapper(*args, **original_kwargs):
+            # Skip tracing if not enabled
             if not is_tracing_enabled():
+                return func(*args, **original_kwargs)
+            
+            # Make a clean copy of kwargs for function execution
+            kwargs = original_kwargs.copy()
+            
+            # Handle parent visibility context (but remove from kwargs passed to the actual function)
+            parent_visibility = "visible"
+            if "__parent_visibility" in kwargs:
+                parent_visibility = kwargs.pop("__parent_visibility")
+            
+            # Skip trace recording for hidden operations based on context
+            if visibility == "hidden" and parent_visibility == "visible":
+                # Execute function without creating a trace
                 return func(*args, **kwargs)
             
             # Prepare metadata
             metadata = create_run_metadata(operation_type)
+            metadata["visibility"] = visibility
             
             # Extract additional metadata if extractor provided
             if metadata_extractor:
                 try:
                     additional_metadata = metadata_extractor(*args, **kwargs)
-                    metadata.update(additional_metadata)
+                    if additional_metadata:
+                        metadata.update(additional_metadata)
                 except Exception as e:
                     logger.warning(f"Failed to extract metadata: {e}")
             
@@ -54,9 +72,14 @@ def traced_operation(
                 tags=[operation_type, "microlearning"]
             )(func)
             
+            # Add visibility context for child operations via a new kwargs dict
+            traced_kwargs = kwargs.copy()
+            traced_kwargs["__parent_visibility"] = visibility
+            
             # Execute with timing
             start_time = time.time()
             try:
+                # Pass the original kwargs to the actual function
                 result = traced_func(*args, **kwargs)
                 metadata["duration_seconds"] = time.time() - start_time
                 metadata["status"] = "success"
@@ -160,9 +183,3 @@ def extract_file_metadata(file_path: str) -> Dict[str, Any]:
             metadata["unit_id"] = part.split('-')[0] if '-' in part else part.split('_')[0]
     
     return metadata
-
-
-# Example usage in other modules:
-# @traced_operation("pdf_extraction", metadata_extractor=lambda self, path: extract_file_metadata(path))
-# def extract_pdf(self, file_path):
-#     ...

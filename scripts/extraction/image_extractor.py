@@ -113,7 +113,6 @@ class ImageExtractor:
         
         return results
     
-    @traced_operation("single_image_extraction")
     def _extract_single_image(self, pdf_document, img_info, page_num, image_counter):
         """
         Extract a single image from PDF.
@@ -153,7 +152,6 @@ class ImageExtractor:
         
         return pil_image
     
-    @traced_operation("image_resize")
     def _resize_image(self, image):
         """
         Resize image if it exceeds maximum dimensions while maintaining aspect ratio.
@@ -180,7 +178,6 @@ class ImageExtractor:
         
         return image
     
-    @traced_operation("image_save")
     def _save_image(self, image, path):
         """
         Save PIL Image to file.
