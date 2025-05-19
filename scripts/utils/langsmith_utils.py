@@ -3,7 +3,8 @@
 import functools
 import logging
 import time
-from typing import Any, Callable, Dict, Optional
+import os
+from typing import Any, Callable, Dict, List, Optional, Union
 from langsmith import traceable
 from langchain_core.tracers.context import tracing_v2_enabled
 from ..config.tracing import is_tracing_enabled, create_run_metadata
@@ -11,12 +12,94 @@ from ..config.tracing import is_tracing_enabled, create_run_metadata
 logger = logging.getLogger(__name__)
 
 
+class ImageExtractionTracker:
+    """Helper class for tracking image extraction metrics across multiple documents."""
+    
+    def __init__(self):
+        """Initialize the extraction tracker."""
+        self.reset()
+    
+    def reset(self):
+        """Reset all tracking metrics."""
+        self.document_count = 0
+        self.successful_documents = 0
+        self.problematic_documents = 0
+        self.total_images = 0
+        self.extracted_images = 0
+        self.failed_images = 0
+        self.validation_failures = 0
+        self.problematic_documents_list = []
+        self.issue_types = {}
+        self.start_time = time.time()
+    
+    def add_document_result(self, doc_path: str, extraction_results: Dict):
+        """
+        Add results from a single document extraction.
+        
+        Args:
+            doc_path: Path to the document
+            extraction_results: Extraction results dictionary
+        """
+        self.document_count += 1
+        
+        # Track document success/failure
+        if extraction_results.get('success', False):
+            self.successful_documents += 1
+        else:
+            self.problematic_documents += 1
+            self.problematic_documents_list.append({
+                'path': doc_path,
+                'errors': extraction_results.get('errors', []),
+                'problematic_count': len(extraction_results.get('problematic_images', [])),
+                'failure_ratio': extraction_results.get('failure_ratio', 0)
+            })
+        
+        # Track image counts
+        self.total_images += (extraction_results.get('extracted_count', 0) + 
+                              extraction_results.get('failed_count', 0))
+        self.extracted_images += extraction_results.get('extracted_count', 0)
+        self.failed_images += extraction_results.get('failed_count', 0)
+        self.validation_failures += extraction_results.get('validation_failures', 0)
+        
+        # Track issue types
+        metrics = extraction_results.get('extraction_metrics', {})
+        issue_types = metrics.get('issue_types', {})
+        
+        for issue_type, count in issue_types.items():
+            if count > 0:
+                self.issue_types[issue_type] = self.issue_types.get(issue_type, 0) + count
+    
+    def get_summary(self) -> Dict:
+        """Get summary of all tracked extractions."""
+        elapsed_time = time.time() - self.start_time
+        success_rate = (self.extracted_images / self.total_images * 100) if self.total_images > 0 else 0
+        
+        return {
+            'document_count': self.document_count,
+            'successful_documents': self.successful_documents,
+            'problematic_documents': self.problematic_documents,
+            'total_images': self.total_images,
+            'extracted_images': self.extracted_images,
+            'failed_images': self.failed_images,
+            'validation_failures': self.validation_failures,
+            'success_rate': f"{success_rate:.1f}%",
+            'issue_types': self.issue_types,
+            'elapsed_time': elapsed_time,
+            'problematic_documents_list': self.problematic_documents_list,
+        }
+
+
+# Global tracker instance
+image_extraction_tracker = ImageExtractionTracker()
+
+
 def traced_operation(
     operation_type: str,
     name: Optional[str] = None,
     metadata_extractor: Optional[Callable] = None,
     run_type: str = "chain",
-    visibility: str = "visible"
+    visibility: str = "visible",
+    track_image_extraction: bool = False
 ):
     """
     Decorator to trace operations with LangSmith.
@@ -27,6 +110,7 @@ def traced_operation(
         metadata_extractor: Function to extract metadata from arguments
         run_type: LangSmith run type (chain, llm, tool, etc.)
         visibility: Controls trace visibility: "visible" (default) or "hidden"
+        track_image_extraction: Whether to track image extraction metrics
     """
     def decorator(func: Callable) -> Callable:
         @functools.wraps(func)
@@ -83,6 +167,17 @@ def traced_operation(
                 result = traced_func(*args, **kwargs)
                 metadata["duration_seconds"] = time.time() - start_time
                 metadata["status"] = "success"
+                
+                # Special handling for image extraction results
+                if track_image_extraction and isinstance(result, dict):
+                    # This is an image extraction result
+                    update_extraction_trace_metadata(metadata, result)
+                    
+                    # Add to global tracker if provided
+                    if len(args) > 1 and isinstance(args[1], str):
+                        # Assuming first arg is self, second is pdf_path
+                        image_extraction_tracker.add_document_result(args[1], result)
+                
                 return result
             except Exception as e:
                 metadata["duration_seconds"] = time.time() - start_time
@@ -92,6 +187,38 @@ def traced_operation(
             
         return wrapper
     return decorator
+
+
+def update_extraction_trace_metadata(metadata: Dict, extraction_results: Dict):
+    """
+    Update trace metadata with image extraction results.
+    
+    Args:
+        metadata: Trace metadata dictionary
+        extraction_results: Image extraction results dictionary
+    """
+    # Add image extraction metrics
+    metadata["image_extraction_success"] = extraction_results.get("success", False)
+    metadata["images_extracted"] = extraction_results.get("extracted_count", 0)
+    metadata["images_failed"] = extraction_results.get("failed_count", 0)
+    metadata["validation_failures"] = extraction_results.get("validation_failures", 0)
+    
+    # Add tag for problematic extractions
+    if extraction_results.get("problematic_images", []):
+        if "tags" not in metadata:
+            metadata["tags"] = []
+        metadata["tags"].append("problematic_extraction")
+        
+        # Only add detailed issue data if there are problems
+        metadata["problematic_images_count"] = len(extraction_results.get("problematic_images", []))
+        
+        # Add summary of issue types
+        issue_counts = {}
+        for img in extraction_results.get("problematic_images", []):
+            issue_type = img.get("issue_type", "unknown")
+            issue_counts[issue_type] = issue_counts.get(issue_type, 0) + 1
+        
+        metadata["issue_types"] = issue_counts
 
 
 def trace_api_call(model_id: str, operation: str = "generate"):
@@ -143,6 +270,8 @@ def trace_batch_operation(operation_name: str):
         def __enter__(self):
             if is_tracing_enabled():
                 self.start_time = time.time()
+                # Reset image extraction tracker at start of batch
+                image_extraction_tracker.reset()
             return self
             
         def __exit__(self, exc_type, exc_val, exc_tb):
@@ -150,10 +279,26 @@ def trace_batch_operation(operation_name: str):
                 self.metadata["duration_seconds"] = time.time() - self.start_time
                 self.metadata["status"] = "error" if exc_type else "success"
                 
-                # Log batch results
+                # Add image extraction metrics to batch metadata
+                extraction_summary = image_extraction_tracker.get_summary()
+                self.metadata.update({
+                    "documents_processed": extraction_summary["document_count"],
+                    "documents_problematic": extraction_summary["problematic_documents"],
+                    "total_images": extraction_summary["total_images"],
+                    "extracted_images": extraction_summary["extracted_images"],
+                    "failed_images": extraction_summary["failed_images"],
+                    "image_extraction_success_rate": extraction_summary["success_rate"]
+                })
+                
+                # Log batch results with image extraction info
                 logger.info(f"Batch operation '{self.name}' completed: "
                           f"{self.metadata['items_processed']} processed, "
                           f"{self.metadata['items_failed']} failed")
+                
+                if extraction_summary["problematic_documents"] > 0:
+                    logger.warning(f"Image extraction issues detected in {extraction_summary['problematic_documents']} documents")
+                    for doc in extraction_summary["problematic_documents_list"]:
+                        logger.warning(f"Problematic document: {doc['path']} - {doc['problematic_count']} issue(s)")
                 
         def update_progress(self, processed: int = 0, failed: int = 0):
             """Update batch progress counters."""
@@ -183,3 +328,72 @@ def extract_file_metadata(file_path: str) -> Dict[str, Any]:
             metadata["unit_id"] = part.split('-')[0] if '-' in part else part.split('_')[0]
     
     return metadata
+
+
+def get_image_extraction_summary() -> Dict:
+    """Get the current image extraction summary from the global tracker."""
+    return image_extraction_tracker.get_summary()
+
+
+def generate_batch_report(output_dir: Optional[str] = None) -> Dict:
+    """
+    Generate a comprehensive report of image extraction issues across the batch.
+    
+    Args:
+        output_dir: Optional directory to save report to
+        
+    Returns:
+        Dictionary with summary information
+    """
+    summary = image_extraction_tracker.get_summary()
+    
+    # Generate markdown report
+    report = [
+        f"# Image Extraction Batch Report",
+        f"Date: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+        f"",
+        f"## Summary",
+        f"- Documents processed: {summary['document_count']}",
+        f"- Documents with issues: {summary['problematic_documents']}",
+        f"- Total images: {summary['total_images']}",
+        f"- Successfully extracted: {summary['extracted_images']}",
+        f"- Failed to extract: {summary['failed_images']}",
+        f"- Validation failures: {summary['validation_failures']}",
+        f"- Overall success rate: {summary['success_rate']}",
+        f"- Processing time: {summary['elapsed_time']:.1f} seconds",
+        f"",
+        f"## Issue Breakdown"
+    ]
+    
+    for issue_type, count in summary['issue_types'].items():
+        report.append(f"- {issue_type}: {count}")
+    
+    report.append("")
+    report.append("## Problematic Documents")
+    
+    # Add details for each problematic document
+    for i, doc in enumerate(summary['problematic_documents_list']):
+        report.append(f"### Document {i+1}: {doc['path']}")
+        report.append(f"- **Problematic Images**: {doc['problematic_count']}")
+        report.append(f"- **Failure Ratio**: {doc['failure_ratio']:.2f}")
+        
+        if doc['errors']:
+            report.append(f"- **Errors**:")
+            for error in doc['errors']:
+                report.append(f"  - {error}")
+        
+        report.append("")
+    
+    summary["report_text"] = "\n".join(report)
+    
+    # Save report to file if output_dir provided
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+        report_path = os.path.join(output_dir, f"batch_extraction_report_{int(time.time())}.md")
+        
+        with open(report_path, "w", encoding="utf-8") as f:
+            f.write(summary["report_text"])
+        
+        summary["report_path"] = report_path
+    
+    return summary

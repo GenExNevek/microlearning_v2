@@ -8,8 +8,9 @@ from datetime import datetime
 from google.genai import types  # Add this import
 from ..config.extraction_prompt import get_extraction_prompt
 from ..config import settings
-from .image_extractor import ImageExtractor
+from .image_extractor import ImageExtractor, generate_extraction_report
 from ..utils.langsmith_utils import traced_operation, extract_file_metadata
+from ..utils.image_validation import ImageIssueType
 
 logger = logging.getLogger(__name__)
 
@@ -292,31 +293,8 @@ class MarkdownFormatter:
         md_filename_without_ext = metadata.get('unit_id', 'UNI0001') + '_' + metadata.get('unit_title_id', '')
         img_assets_dir = f"./{md_filename_without_ext}-img-assets"
         
-        # If we have extraction results, update image references to match extracted files
-        if image_extraction_results and image_extraction_results.get('success'):
-            extracted_images = image_extraction_results.get('images', [])
-            
-            # Find and replace image references
-            img_pattern = r'!\[(.*?)\]\((.*?)(?:\.(?:png|jpg|jpeg|gif))\)'
-            
-            def replace_image(match):
-                alt_text = match.group(1)
-                # Use the next available extracted image
-                if extracted_images:
-                    img_info = extracted_images.pop(0)
-                    return f'![{alt_text}]({img_assets_dir}/{img_info["filename"]})'
-                else:
-                    # Fallback to generic naming
-                    return f'![{alt_text}]({img_assets_dir}/fig1-image.png)'
-            
-            content = re.sub(img_pattern, replace_image, content)
-        else:
-            # Fallback: Fix image references with generic naming
-            content = re.sub(
-                r'!\[(.*?)\]\((.*?)(?:\.(?:png|jpg|jpeg|gif))\)',
-                r'![\1](' + img_assets_dir + r'/fig1-image.png)',
-                content
-            )
+        # Process image references based on extraction results
+        content = self._process_image_references(content, img_assets_dir, image_extraction_results)
         
         # Ensure proper spacing around section markers
         content = re.sub(r'(\n*)(<!--.*?-->)(\n*)', r'\n\n\2\n\n', content)
@@ -325,6 +303,83 @@ class MarkdownFormatter:
         content = re.sub(r'\n{3,}', '\n\n', content)
         
         logger.info("Completed markdown post-processing")
+        return content
+    
+    def _process_image_references(self, content, img_assets_dir, image_extraction_results=None):
+        """
+        Process image references in the markdown content.
+        
+        Args:
+            content: Markdown content with image references
+            img_assets_dir: Path to image assets directory
+            image_extraction_results: Results from image extraction
+            
+        Returns:
+            Updated markdown content with fixed image references
+        """
+        # If we have extraction results, update image references to match extracted files
+        if image_extraction_results and image_extraction_results.get('images'):
+            extracted_images = image_extraction_results.get('images', [])[:]  # Create a copy
+            problematic_images = {f"{img.get('page')}-{img.get('index')}": img 
+                                 for img in image_extraction_results.get('problematic_images', [])}
+            
+            # Find image references in the markdown
+            img_pattern = r'!\[(.*?)\]\((.*?)(?:\.(?:png|jpg|jpeg|gif))?\)'
+            
+            def replace_image(match):
+                alt_text = match.group(1)
+                orig_path = match.group(2)
+                
+                # Extract page/fig info from original path if possible
+                page_fig_match = re.search(r'(?:page|fig)?[-_]?(\d+)', orig_path)
+                page_num = int(page_fig_match.group(1)) if page_fig_match else None
+                
+                # Check if this image is in the problematic list
+                if page_num and f"{page_num}-1" in problematic_images:
+                    # This is a problematic image - add a warning comment
+                    img_issue = problematic_images[f"{page_num}-1"]
+                    issue_type = img_issue.get('issue_type', 'unknown')
+                    warning = f"\n<!-- WARNING: Image extraction issue: {issue_type} -->\n"
+                    
+                    # Use a placeholder or fallback image
+                    if issue_type == ImageIssueType.BLANK.value:
+                        return f"{warning}![{alt_text} (Extraction Issue: Blank Image)]({img_assets_dir}/placeholder-blank.png)"
+                    elif issue_type == ImageIssueType.CORRUPT.value:
+                        return f"{warning}![{alt_text} (Extraction Issue: Corrupt Image)]({img_assets_dir}/placeholder-corrupt.png)"
+                    else:
+                        return f"{warning}![{alt_text} (Extraction Issue: {issue_type})]({img_assets_dir}/placeholder-error.png)"
+                
+                # Use the next available successfully extracted image
+                if extracted_images:
+                    img_info = extracted_images.pop(0)
+                    return f"![{alt_text}]({img_assets_dir}/{img_info['filename']})"
+                else:
+                    # Fallback to generic naming
+                    return f"![{alt_text}]({img_assets_dir}/fig1-image.png)"
+            
+            content = re.sub(img_pattern, replace_image, content)
+            
+            # Add warnings if we couldn't match all extracted images
+            if extracted_images:
+                unused_count = len(extracted_images)
+                logger.warning(f"Found {unused_count} extracted images that weren't referenced in the markdown")
+                warning = (f"\n\n<!-- WARNING: There were {unused_count} extracted images "
+                          f"that weren't referenced in the markdown content -->\n")
+                content += warning
+                
+        else:
+            # Fallback: Fix image references with generic naming
+            logger.warning("No extraction results available - using generic image references")
+            content = re.sub(
+                r'!\[(.*?)\]\((.*?)(?:\.(?:png|jpg|jpeg|gif))?\)',
+                r'![\1](' + img_assets_dir + r'/fig1-image.png)',
+                content
+            )
+            
+            # Add a warning about missing images
+            warning = "\n\n<!-- WARNING: Image extraction failed or no results available - using generic references -->\n"
+            content += warning
+        
         return content
     
     def generate_frontmatter(self, metadata):
