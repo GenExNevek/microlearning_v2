@@ -90,22 +90,16 @@ The final markdown should:
 6. Have appropriate placeholders for media elements
 
 ## Output Format
-Please structure the output with the following metadata frontmatter at the top:
+Please extract and include ONLY the following metadata in a frontmatter section at the top of the document:
 
 ---
-unit-id: {unit_id}
-unit-title-id: {unit_title_id}
-unit-title: [Extract the title from the document]
-phase: {phase}
+unit-title: [Extract the full title from the document]
 subject: [Extract the subject from the document]
-parent-module-id: {parent_module_id}
-parent-course-id: {parent_course_id}
-batch-id: {batch_id}
-extraction-date: {extraction_date}
-extractor-name: "Automated Extraction"
 ---
 
 Then follow with the properly formatted markdown content with all the appropriate section markers.
+
+DO NOT include any other metadata fields in the frontmatter. Other metadata such as unit-id, unit-title-id, parent-module-id, etc. will be added programmatically.
 """
 
 def get_extraction_prompt(metadata):

@@ -3,6 +3,7 @@
 import re
 import os
 import logging
+import yaml
 from datetime import datetime
 from google.genai import types  # Add this import
 from ..config.extraction_prompt import get_extraction_prompt
@@ -180,10 +181,81 @@ class MarkdownFormatter:
     @traced_operation("markdown_post_processing")
     def post_process_markdown(self, content, metadata, image_extraction_results=None):
         """Apply post-processing to the generated markdown."""
-        # Check if content has frontmatter, if not add it
-        if not content.startswith('---'):
-            frontmatter = self.generate_frontmatter(metadata)
-            content = frontmatter + '\n\n' + content
+        logger.info("Starting markdown post-processing")
+        
+        # Check if content contains a markdown code block marker
+        markdown_code_pattern = r'```\s*markdown\s*\n'
+        has_markdown_marker = bool(re.search(markdown_code_pattern, content))
+        if has_markdown_marker:
+            logger.info("Found markdown code block marker in content")
+        
+        # First, check if content has Gemini-generated frontmatter
+        # Look for frontmatter either at the start of the document or after a markdown code block marker
+        frontmatter_patterns = [
+            # Pattern 1: Frontmatter at the start of the document
+            r'^---\s+(.*?)\s+---',
+            # Pattern 2: Frontmatter after a markdown code block marker
+            r'```\s*markdown\s*\n---\s+(.*?)\s+---'
+        ]
+        
+        frontmatter_match = None
+        for pattern in frontmatter_patterns:
+            match = re.search(pattern, content, re.DOTALL)
+            if match:
+                frontmatter_match = match
+                logger.info(f"Found frontmatter using pattern: {pattern}")
+                break
+        
+        if frontmatter_match:
+            try:
+                # Extract the frontmatter text
+                frontmatter_text = frontmatter_match.group(1)
+                
+                # Parse frontmatter as YAML
+                extracted_metadata = yaml.safe_load(frontmatter_text) or {}
+                logger.info(f"Extracted metadata from Gemini: {extracted_metadata}")
+                
+                # Remove the frontmatter and any markdown code markers from content
+                if has_markdown_marker:
+                    # First remove the entire section including markdown marker and frontmatter
+                    content = re.sub(r'```\s*markdown\s*\n---\s+.*?\s+---', '', content, flags=re.DOTALL)
+                    # Then also check for and remove any trailing markdown code end markers
+                    content = re.sub(r'```\s*\n', '', content)
+                else:
+                    # Just remove the frontmatter if no markdown marker
+                    content = content[frontmatter_match.end():].strip()
+                
+                logger.info("Removed Gemini frontmatter from content")
+                
+                # Merge extracted metadata with the provided metadata
+                merged_metadata = metadata.copy()
+                
+                # Only take specific fields from Gemini extraction
+                if 'unit-title' in extracted_metadata:
+                    merged_metadata['unit_title'] = extracted_metadata['unit-title']
+                    logger.info(f"Using Gemini-extracted title: {extracted_metadata['unit-title']}")
+                if 'subject' in extracted_metadata:
+                    merged_metadata['subject'] = extracted_metadata['subject']
+                    logger.info(f"Using Gemini-extracted subject: {extracted_metadata['subject']}")
+                
+                # Generate new frontmatter with merged data
+                new_frontmatter = self.generate_frontmatter(merged_metadata)
+                logger.info("Generated new merged frontmatter")
+                
+                # Reconstruct content with the new frontmatter
+                content = f"{new_frontmatter}\n\n{content}"
+                logger.info("Reconstructed content with merged frontmatter")
+            except Exception as e:
+                logger.error(f"Error processing frontmatter: {e}")
+                # If there's an error, ensure we have some frontmatter
+                if not content.startswith('---'):
+                    new_frontmatter = self.generate_frontmatter(metadata)
+                    content = f"{new_frontmatter}\n\n{content}"
+        else:
+            logger.info("No Gemini frontmatter found, generating standard frontmatter")
+            # No frontmatter from Gemini, add our standard frontmatter
+            new_frontmatter = self.generate_frontmatter(metadata)
+            content = f"{new_frontmatter}\n\n{content}"
         
         # Ensure all section markers are present
         required_sections = [
@@ -252,6 +324,7 @@ class MarkdownFormatter:
         # Clean up excess whitespace
         content = re.sub(r'\n{3,}', '\n\n', content)
         
+        logger.info("Completed markdown post-processing")
         return content
     
     def generate_frontmatter(self, metadata):
