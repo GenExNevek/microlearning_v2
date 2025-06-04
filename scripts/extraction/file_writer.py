@@ -1,7 +1,6 @@
 """Module for file writing and directory management."""
 
 import os
-import shutil
 
 class FileWriter:
     """Handles file writing and directory creation."""
