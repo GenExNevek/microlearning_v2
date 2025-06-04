@@ -22,15 +22,31 @@ class BaseExtractionStrategy(ABC):
             config: Dictionary of configuration settings.
         """
         self.config = config
-        self.min_width = self.config.get("min_width", 50)
-        self.min_height = self.config.get("min_height", 50)
+        # Ensure min_width and min_height are integers and have sensible defaults
+        # Use .get with default and then convert to int for robustness
+        try:
+            self.min_width = int(self.config.get("min_width", 50))
+        except (ValueError, TypeError):
+            logger.warning(f"Invalid min_width configuration value: {self.config.get('min_width')}. Using default 50.")
+            self.min_width = 50
+
+        try:
+            self.min_height = int(self.config.get("min_height", 50))
+        except (ValueError, TypeError):
+            logger.warning(f"Invalid min_height configuration value: {self.config.get('min_height')}. Using default 50.")
+            self.min_height = 50
+
+        # Ensure minimums are positive
+        self.min_width = max(1, self.min_width)
+        self.min_height = max(1, self.min_height)
+
 
     @abstractmethod
     def extract(
-        self, 
-        pdf_document: fitz.Document, 
-        img_info: tuple, 
-        page_num: int, 
+        self,
+        pdf_document: fitz.Document,
+        img_info: tuple,
+        page_num: int,
         extraction_info: Dict
     ) -> Tuple[Optional[Image.Image], Dict]:
         """
@@ -60,10 +76,28 @@ class BaseExtractionStrategy(ABC):
         Returns:
             True if the image meets minimum size, False otherwise.
         """
+        if image is None:
+            # This case should ideally be handled by the strategy returning None immediately,
+            # but as a defensive check within the method.
+            error_msg = "Image object is None before size check."
+            extraction_info['error'] = error_msg
+            extraction_info['issue_type'] = "internal_error"
+            logger.error(error_msg)
+            return False
+
+        # Ensure image has width and height attributes (might be a mock without them)
+        if not hasattr(image, 'width') or not hasattr(image, 'height'):
+             error_msg = f"Image object is missing width or height attributes during size check: {type(image)}"
+             extraction_info['error'] = error_msg
+             extraction_info['issue_type'] = "internal_error"
+             logger.error(error_msg)
+             return False
+
+
         if image.width < self.min_width or image.height < self.min_height:
-            extraction_info['error'] = f"Image too small: {image.width}x{image.height}"
+            extraction_info['error'] = f"Image too small: {image.width}x{image.height} (min: {self.min_width}x{self.min_height})"
             extraction_info['issue_type'] = "size_issues"
-            logger.debug(f"Image too small: {image.width}x{image.height}")
+            logger.debug(f"Image too small: {image.width}x{image.height} for min {self.min_width}x{self.min_height}")
             return False
         return True
 

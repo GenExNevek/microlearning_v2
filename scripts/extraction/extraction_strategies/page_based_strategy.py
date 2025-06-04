@@ -7,7 +7,7 @@ from PIL import Image
 import logging
 from typing import Optional, Dict, Any, Tuple
 # Import MagicMock for type checking in finally block
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock # Keep import for clarity
 
 from .base_strategy import BaseExtractionStrategy
 
@@ -35,6 +35,7 @@ class PageBasedExtractionStrategy(BaseExtractionStrategy):
         Returns:
             Tuple of (PIL Image object or None, updated extraction info dict).
         """
+        # Page number is 1-indexed, PyMuPDF page index is 0-indexed
         page_idx = page_num - 1
         extraction_info['extraction_method'] = 'page_based'
         extracted_image = None
@@ -43,36 +44,79 @@ class PageBasedExtractionStrategy(BaseExtractionStrategy):
 
 
         try:
-            # Get the page
-            # Ensure page exists (this check might cause IndexError if pdf_document.__len__ is not mocked in tests)
-            # The test should ensure len(pdf_document) is mocked if this check is intended to be bypassed.
-            # If the index is truly out of range in real code, the IndexError is correct.
-            # Let's keep the check as it is valid production code. The test mocking needs to be adjusted.
-            # However, let's ensure the exception message is specific to the page number being requested.
-            if page_idx < 0 or page_idx >= len(pdf_document):
-                raise IndexError(f"Page index {page_idx} requested (corresponds to page {page_num}), but document only has {len(pdf_document)} pages (0-{len(pdf_document)-1}).")
-            page = pdf_document[page_idx] # This call might also fail
+            # Ensure document is valid and page exists
+            if pdf_document is None:
+                 raise ValueError("PDF document object is None.")
+
+            # Check page range defensively and get the page object.
+            # Use a try-except block for accessing document length and page,
+            # as these can fail on corrupted documents.
+            try:
+                 doc_length = len(pdf_document) # This call might fail
+                 # Using >= and < handles 0-indexed correctly relative to doc_length
+                 if page_idx < 0 or page_idx >= doc_length:
+                      raise IndexError(f"Page index {page_idx} requested (corresponds to page {page_num}), but document only has {doc_length} pages (0-{max(0, doc_length-1)}).")
+                 page = pdf_document[page_idx] # This call might also fail
+                 if page is None: # Defensive check if getitem returns None
+                      raise ValueError(f"PDF document returned None for page index {page_idx}")
+
+            except Exception as page_access_error:
+                 # Catch errors related to accessing document length or page object
+                 error = f"Page-based extraction failed for page {page_num} during page access: {str(page_access_error)}"
+                 logger.debug(error)
+                 extraction_info['success'] = False
+                 extraction_info['error'] = error
+                 extraction_info['issue_type'] = "extraction_failed" # Or page_access_failed? Use extraction_failed for simplicity
+                 return None, extraction_info
 
 
             # Render page to pixmap at configurable resolution
             current_dpi = self.config.get("dpi", 150)
+            # Validate DPI: must be numeric and positive
             if not isinstance(current_dpi, (int, float)) or current_dpi <= 0:
-                 logger.warning(f"Invalid DPI setting {current_dpi} for page rendering. Using default 150.")
+                 logger.warning(f"Invalid DPI setting '{current_dpi}' for page rendering. Using default 150.")
                  current_dpi = 150
 
             zoom_factor = current_dpi / 72.0
-            matrix = fitz.Matrix(zoom_factor, zoom_factor)
-            # This call might fail (e.g., invalid PDF data on page)
-            pix = page.get_pixmap(matrix=matrix)
+            # Use a try-except block around Pixmap rendering
+            try:
+                matrix = fitz.Matrix(zoom_factor, zoom_factor)
+                # This call might fail (e.g., invalid PDF data on page)
+                pix = page.get_pixmap(matrix=matrix)
+            except Exception as rendering_error:
+                 error = f"Page-based extraction failed for page {page_num} during rendering: {str(rendering_error)}"
+                 logger.debug(error)
+                 extracted_image = None
+                 extraction_info['success'] = False
+                 extraction_info['error'] = error
+                 extraction_info['issue_type'] = "rendering_failed"
+                 return None, extraction_info
+
 
             # Convert to PIL Image
-            # Assuming get_pixmap always returns RGB or RGBA for page rendering
-            # If alpha > 0, use RGBA, otherwise RGB
-            mode = "RGBA" if pix.alpha > 0 else "RGB"
-            pil_image = Image.frombytes(mode, [pix.width, pix.height], pix.samples)
+            # Assuming get_pixmap typically returns RGB or RGBA for page rendering.
+            # Check pix.alpha to determine mode.
+            try:
+                mode = "RGBA" if pix.alpha > 0 else "RGB"
+                pil_image = Image.frombytes(mode, [pix.width, pix.height], pix.samples)
+            except Exception as pil_conv_error:
+                 error = f"Page-based extraction failed for page {page_num} during PIL conversion: {str(pil_conv_error)}"
+                 logger.debug(error)
+                 extracted_image = None
+                 extraction_info['success'] = False
+                 extraction_info['error'] = error
+                 extraction_info['issue_type'] = "extraction_failed" # Or pil_conversion_failed?
+                 # Ensure pixmap is closed if PIL conversion fails *after* pix is created
+                 if pix is not None and hasattr(pix, 'close'):
+                     try: pix.close()
+                     except Exception: pass
+                 pix = None
+                 return None, extraction_info
+
 
             # Free the pixmap memory immediately after its samples are used
-            if pix is not None and isinstance(pix, (fitz.Pixmap, MagicMock)) and hasattr(pix, 'close'):
+            # Use hasattr and try/except for robustness with mocks/unexpected objects
+            if pix is not None and hasattr(pix, 'close'):
                  try: pix.close()
                  except Exception: pass
             pix = None # Set to None *after* closing
@@ -80,20 +124,28 @@ class PageBasedExtractionStrategy(BaseExtractionStrategy):
 
             # Note: We don't check minimum size here, as the result is the entire page.
             # The downstream validation/processing should handle filtering if needed.
-            # However, adding a warning is good practice.
-            extraction_info['warning'] = "Used whole page rendering as fallback; image contains entire page."
+            # Adding a warning is good practice as this strategy returns the whole page.
+            # Only add the warning if the extraction was successful.
+            # Warning is added after success check below.
+
 
             # If all steps pass, set extracted_image and success
+            # pil_image must be created by now if no exception occurred
+            if pil_image is None:
+                 # This should not happen, but defensive check
+                 raise RuntimeError("PIL Image not created after pixmap rendering.")
+
             extracted_image = pil_image
             extraction_info['success'] = True
             extraction_info['dimensions'] = f"{extracted_image.width}x{extracted_image.height}"
             extraction_info['mode'] = extracted_image.mode
+            extraction_info['warning'] = "Used whole page rendering as fallback; image contains entire page." # Add warning on success
             logger.debug(f"Page-based extraction successful for page {page_num}")
 
 
         except Exception as e:
-            # Catch errors during page lookup, pixmap rendering, or PIL conversion
-            error = f"Page-based extraction failed for page {page_num}: {str(e)}"
+            # Catch any other unexpected exceptions
+            error = f"Page-based extraction failed for page {page_num} with unexpected error: {str(e)}"
             logger.debug(error)
             extracted_image = None # Ensure extracted_image is None on failure
             extraction_info['success'] = False # Explicitly set success to False on exception
@@ -108,10 +160,12 @@ class PageBasedExtractionStrategy(BaseExtractionStrategy):
         finally:
              # Safety net: Ensure any pixmaps that were *not* closed in the try block get closed here.
              # This should ideally not be necessary if the try block logic is correct.
-             if pix is not None and isinstance(pix, (fitz.Pixmap, MagicMock)) and hasattr(pix, 'close') and not getattr(pix.close, 'called', False):
+             # Simplified check: if object exists and has a close method, try to close it.
+             # Handles real Pixmaps and mocks.
+             if pix is not None and hasattr(pix, 'close'):
                  try:
                      pix.close()
-                 except Exception: pass
+                 except Exception: pass # Ignore errors during close
 
 
         # The caller (RetryCoordinator) is responsible for closing the *returned* PIL image (extracted_image)

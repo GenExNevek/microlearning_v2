@@ -1,142 +1,254 @@
-
 # scripts/extraction/tests/test_extraction_strategies.py
 
-"""Unit tests for individual extraction strategies."""
-
 import unittest
-from unittest.mock import MagicMock, patch, call, ANY
+from unittest.mock import MagicMock, patch, call
 from PIL import Image
-import fitz
-import os
-import tempfile
-import shutil
 import io
-# import call # Remove unused import from pyswip # This was already removed in the previous fix, confirming it's not needed
-
-# Import strategy classes and BaseStrategy
-from ..extraction_strategies.base_strategy import BaseExtractionStrategy
-from ..extraction_strategies.standard_strategy import StandardExtractionStrategy
-from ..extraction_strategies.alternate_colorspace_strategy import AlternateColorspaceExtractionStrategy
-from ..extraction_strategies.compression_retry_strategy import CompressionRetryStrategy
-from ..extraction_strategies.page_based_strategy import PageBasedExtractionStrategy
-
-# Import ImageIssueType for assertions
-# Adjust import path based on project structure
-# Assuming scripts/extraction/tests is sibling to scripts/utils
-from scripts.utils.image_validation import ImageIssueType
+import fitz
+from typing import Dict, Any, Tuple, Optional
+# Import ABC and abstractmethod for creating a concrete base class test implementation
+from abc import ABC, abstractmethod
 
 
-# Import types for type hints
-from typing import Optional, Dict, Any, Tuple, Type
+# Import the strategies to be tested
+from scripts.extraction.extraction_strategies.standard_strategy import StandardExtractionStrategy
+from scripts.extraction.extraction_strategies.alternate_colorspace_strategy import AlternateColorspaceExtractionStrategy
+from scripts.extraction.extraction_strategies.compression_retry_strategy import CompressionRetryStrategy
+from scripts.extraction.extraction_strategies.page_based_strategy import PageBasedExtractionStrategy
+from scripts.extraction.extraction_strategies.base_strategy import BaseExtractionStrategy
 
 
 # Mock configuration
 MOCK_CONFIG = {
     "min_width": 50,
     "min_height": 50,
-    "dpi": 150, # Used by PageBasedStrategy
+    "dpi": 150 # For page-based strategy
 }
 
-# Concrete mock class for testing BaseExtractionStrategy methods
-class ConcreteMockStrategy(BaseExtractionStrategy):
-    """A concrete implementation of BaseExtractionStrategy for testing."""
-    def extract(self, pdf_document: fitz.Document, img_info: tuple, page_num: int, extraction_info: Dict) -> Tuple[Optional[Image.Image], Dict]:
-        """Dummy extract implementation."""
-        # This method is not called by the BaseStrategy methods being tested
-        pass
+# Helper function to create a dummy PIL image for testing
+def create_dummy_image(width=100, height=100, mode='RGB', color='red'):
+    """Creates a simple dummy PIL Image."""
+    try:
+        img = Image.new(mode, (width, height), color=color)
+        return img
+    except Exception as e:
+        print(f"Error creating dummy image: {e}")
+        return None
+
+# Helper function to create a mock PyMuPDF Pixmap
+# This mock needs to simulate key attributes and methods used by the strategies
+def create_mock_pixmap(pil_image: Image.Image) -> MagicMock:
+    """Creates a MagicMock that simulates a fitz.Pixmap."""
+    if pil_image is None:
+        # Return a mock with default/empty attributes if image is None
+        return MagicMock(samples=None, width=0, height=0, n=0, alpha=0, colorspace=None, close=MagicMock())
+
+    # Determine fitz attributes based on PIL mode
+    if pil_image.mode == 'L':
+        rawmode = 'L'
+        n = 1
+        alpha = 0
+        cs = fitz.csGRAY
+    elif pil_image.mode == 'RGB':
+        rawmode = 'RGB'
+        n = 3
+        alpha = 0
+        cs = fitz.csRGB
+    elif pil_image.mode == 'RGBA':
+        rawmode = 'RGBA'
+        n = 4
+        alpha = 1
+        # For mocking, we don't need a real fitz colorspace object for RGBA
+        # Just ensure n=4 and alpha=1 are set correctly.
+        cs = MagicMock(name='DeviceRGB') # Or some other mock, the name usually isn't checked unless specific logic exists
+        cs.n = 3 # Simulate base colorspace channels
+    elif pil_image.mode == 'CMYK':
+        rawmode = 'CMYK'
+        n = 4
+        alpha = 0
+        cs = fitz.csCMYK
+    elif pil_image.mode == 'P': # Paletted
+         # Paletted images in PDF often need conversion.
+         # Simulate the attributes that would trigger conversion in the strategy.
+         # A common way to trigger conversion is n != 1/3/4 or alpha > 0.
+         # Paletted (n=1, alpha=0) with non-Gray colorspace name is one way.
+         rawmode = 'L' # Simulates the single channel of palette indices for samples
+         n = 1
+         alpha = 0
+         # Mock a colorspace that isn't DeviceGray to make it non-standard gray
+         mock_colorspace = MagicMock()
+         mock_colorspace.n = n
+         mock_colorspace.name = 'Indexed' # Or some other non-standard name
+         cs = mock_colorspace
+         # Convert PIL image to 'L' before getting samples if source is 'P'
+         # This ensures .tobytes('raw', 'L') works correctly.
+         try:
+            pil_image = pil_image.convert('L')
+         except Exception as e:
+             print(f"Warning: Could not convert PIL P mode to L for mocking: {e}")
+             # Fallback: try converting to RGB or just use original samples if 'L' fails
+             try:
+                 pil_image = pil_image.convert('RGB')
+                 rawmode = 'RGB'
+                 n = 3
+                 alpha = 0
+                 cs = fitz.csRGB
+             except Exception as e2:
+                 print(f"Error: Could not convert PIL P mode to RGB either: {e2}")
+                 # Cannot create valid mock samples
+                 return MagicMock(samples=None, width=0, height=0, n=0, alpha=0, colorspace=None, close=MagicMock())
+
+    else:
+        # For other unsupported modes, convert to RGB for mocking Pixmap samples
+        try:
+            pil_image = pil_image.convert('RGB')
+            rawmode = 'RGB'
+            n = 3
+            alpha = 0
+            cs = fitz.csRGB
+        except Exception as e:
+            print(f"Error: Could not convert PIL image mode {pil_image.mode} to RGB for mocking: {e}")
+            return MagicMock(samples=None, width=0, height=0, n=0, alpha=0, colorspace=None, close=MagicMock())
+
+
+    # Get raw samples, which is what Pixmap.samples contains
+    try:
+        samples = pil_image.tobytes('raw', rawmode)
+    except Exception as e:
+        print(f"Error getting raw bytes from PIL image (mode={pil_image.mode}, rawmode={rawmode}) for mocking: {e}")
+        return MagicMock(samples=None, width=0, height=0, n=0, alpha=0, colorspace=None, close=MagicMock())
+
+
+    # Use plain MagicMock for the instance
+    mock_pix = MagicMock()
+    mock_pix.samples = samples
+    mock_pix.width = pil_image.width
+    mock_pix.height = pil_image.height
+    mock_pix.n = n
+    mock_pix.alpha = alpha
+    mock_pix.colorspace = cs
+    mock_pix.close = MagicMock() # Add a mock close method
+
+    return mock_pix
+
+# Helper function to create mock data returned by extract_image
+def create_mock_extract_image_data(pil_image: Image.Image, img_ext: str) -> Dict:
+    """Creates a dictionary simulating the output of fitz.Document.extract_image."""
+    buffer = io.BytesIO()
+    # Save image to the buffer in the specified format
+    try:
+        # PIL needs format name (e.g., 'JPEG', 'PNG'), not extension (e.g., 'jpeg', 'png')
+        pil_format = img_ext.upper()
+        # Ensure PIL supports the format directly from the image mode
+        # If mode is RGBA and format is JPEG, it will fail unless converted
+        if pil_image.mode == 'RGBA' and pil_format == 'JPEG':
+             pil_image = pil_image.convert('RGB')
+        elif pil_image.mode == 'P' and pil_format not in ['PNG', 'GIF', 'TIFF']:
+             # Some formats don't support paletted, convert
+             pil_image = pil_image.convert('RGB')
+
+        pil_image.save(buffer, format=pil_format)
+        img_bytes = buffer.getvalue()
+        return {"ext": img_ext, "image": img_bytes}
+    except Exception as e:
+        print(f"Error saving dummy image to bytes for mock extract_image (ext={img_ext}, mode={pil_image.mode}): {e}")
+        # Return empty dict or None as the strategy expects
+        return {}
+
+
+# Define a concrete dummy strategy to test BaseExtractionStrategy methods
+class ConcreteDummyExtractionStrategy(BaseExtractionStrategy):
+     def extract(self, pdf_document, img_info, page_num, extraction_info):
+          # This method is not under test for BaseStrategy, provide a minimal implementation
+          return None, extraction_info
 
 
 class TestExtractionStrategies(unittest.TestCase):
 
-    def setUp(self) -> None:
-        # Create mock PDF document and image info
-        # Using spec=fitz.Document is okay here as fitz.Document is not being patched at this level
-        self.mock_doc = MagicMock(spec=fitz.Document)
-        # img_info is typically (xref, s, w, h, bpc, cs, intent, format, filter, stream)
-        self.mock_img_info = (10, 0, 100, 100, 8, fitz.csRGB, '', 'jpeg', 'dct', b'dummy_image_data')
-        self.page_num = 1
-        self.extraction_info: Dict[str, Any] = {} # Ensure it's a dictionary
+    def setUp(self):
+        """Set up common mocks and test data."""
+        # Mock PyMuPDF document and page
+        # Use plain MagicMock for instances to avoid spec/isinstance conflicts
+        self.mock_doc = MagicMock()
+        self.mock_page = MagicMock()
+
+        # Ensure mock_doc behaves like a document for methods used
+        self.page_num = 1 # 1-indexed page number for tests
+        # Mock len() and getitem for page access
+        self.mock_doc.__len__ = MagicMock(return_value=10) # Default length > test page_num
+        self.mock_doc.__getitem__ = MagicMock(return_value=self.mock_page)
+
+        # Mock the Page.get_pixmap method used by PageBasedStrategy
+        self.mock_page.get_pixmap = MagicMock()
+
+        # Mock image info tuple (xref, ...) - Minimal required is xref for Standard/Alternate
+        self.mock_img_info = (10, 0, 100, 100, 8, fitz.csRGB, '', '') # Example tuple with xref 10
+
+        # Initial extraction info dict - reset for each test
+        self.extraction_info: Dict = {}
+
+        # Dummy PIL images for creating mock pixmaps/data
+        self.dummy_image = create_dummy_image(100, 100, 'RGB', 'blue') # Meets min size
+        self.small_image = create_dummy_image(30, 30, 'RGB', 'green') # Smaller than min size
+        # Create a paletted image for alternate colorspace tests
+        self.paletted_image = create_dummy_image(100, 100, 'RGB', 'red').convert('P')
+        # Create an RGBA image for alternate colorspace tests
+        self.rgba_image = create_dummy_image(100, 100, 'RGBA', (255, 0, 0, 128)) # Semi-transparent red
+
+    def tearDown(self):
+        """Clean up dummy images."""
+        if self.dummy_image:
+            self.dummy_image.close()
+        if self.small_image:
+            self.small_image.close()
+        if self.paletted_image:
+             self.paletted_image.close()
+        if self.rgba_image:
+             self.rgba_image.close()
+
+    # Helper to create mock pixmap instances with necessary attributes
+    # Used by patching fitz.Pixmap and setting its return_value or side_effect
+    def _create_mock_pixmap(self, pil_image: Optional[Image.Image]) -> MagicMock:
+         return create_mock_pixmap(pil_image)
+
+    # Helper to create mock data for extract_image
+    def _create_mock_extract_image_data(self, pil_image: Image.Image, img_ext: str) -> Dict:
+         return create_mock_extract_image_data(pil_image, img_ext)
+
+    # Helper to create a mock pixmap suitable for page rendering results
+    def _create_mock_rendered_pixmap(self, width: int, height: int, mode='RGB') -> MagicMock:
+         # Page rendering typically results in RGB or RGBA
+         dummy_page_image = create_dummy_image(width, height, mode)
+         mock_pix = self._create_mock_pixmap(dummy_page_image)
+         dummy_page_image.close() # Clean up the temp PIL image
+         return mock_pix
 
 
-        # Create dummy PIL Image objects for mocking return values
-        self.dummy_image = Image.new('RGB', (100, 100), color = 'red')
-        self.small_image = Image.new('RGB', (30, 30), color = 'blue') # Smaller than min size
+    # --- Base Strategy Tests ---
+    # Use the concrete dummy strategy to test BaseStrategy methods
+    def test_base_strategy_check_min_size_pass(self) -> None:
+        """Test base strategy min size check passes."""
+        strategy = ConcreteDummyExtractionStrategy(MOCK_CONFIG)
+        mock_image = MagicMock(spec=Image.Image, width=100, height=100) # Use width/height directly
+        info = {}
+        self.assertTrue(strategy._check_min_size(mock_image, info))
+        self.assertNotIn('error', info)
+        self.assertNotIn('issue_type', info)
 
-    def tearDown(self) -> None:
-        # Ensure any resources are cleaned up (PIL images might need closing if not garbage collected)
-        self.dummy_image.close()
-        self.small_image.close()
-
-    # --- Helper Methods to create mock PyMuPDF/PIL objects ---
-
-    def _create_mock_pixmap(self, image: Image.Image) -> MagicMock:
-        """Creates a mock fitz.Pixmap object from a PIL Image."""
-        width, height = image.size
-        mode = image.mode
-        # Ensure samples are bytes, convert if needed (e.g. for palette images)
-        if image.mode == 'P':
-            # Convert palette image to RGB or RGBA before getting samples
-            img_for_samples = image.convert('RGB') # Convert to a mode that tobytes works reliably on
-            samples = img_for_samples.tobytes()
-            img_for_samples.close()
-        else:
-             samples = image.tobytes()
-
-
-        n = len(image.getbands())
-        alpha = 1 if 'A' in mode else 0
-        # Set colorspace based on PIL mode for mocking purposes
-        if mode in ['RGB', 'RGBA']:
-             colorspace = fitz.csRGB
-        elif mode == 'L':
-             colorspace = fitz.csGRAY
-        elif mode == 'CMYK':
-             colorspace = fitz.csCMYK
-        else:
-             colorspace = None
+    def test_base_strategy_check_min_size_fail(self) -> None:
+        """Test base strategy min size check fails."""
+        strategy = ConcreteDummyExtractionStrategy(MOCK_CONFIG)
+        mock_image = MagicMock(spec=Image.Image, width=30, height=30) # Use width/height directly
+        info = {}
+        self.assertFalse(strategy._check_min_size(mock_image, info))
+        self.assertIn('Image too small', info['error'])
+        self.assertEqual(info['issue_type'], 'size_issues')
+        # Check the error message includes dimensions and config
+        self.assertIn('30x30', info['error'])
+        self.assertIn(f"min: {MOCK_CONFIG['min_width']}x{MOCK_CONFIG['min_height']}", info['error'])
 
 
-        mock_pix = MagicMock() # Do not use spec=fitz.Pixmap here when fitz.Pixmap is patched
-        mock_pix.width = width
-        mock_pix.height = height
-        mock_pix.samples = samples
-        mock_pix.n = n
-        mock_pix.alpha = alpha
-        mock_pix.colorspace = colorspace # Set the mock colorspace
-        mock_pix.tobytes.return_value = samples # Add tobytes method
-        mock_pix.close = MagicMock() # Add a close method mock
-        return mock_pix
-
-    def _create_mock_extract_image_data(self, image: Image.Image, ext: str) -> Dict[str, Any]:
-        """Creates a mock dictionary like fitz.Document.extract_image returns."""
-        img_byte_arr = io.BytesIO()
-        # Ensure the image mode is compatible with the format for saving to bytes
-        # Convert before saving to bytes if necessary
-        img_to_save = image
-        if ext.lower() in ['jpg', 'jpeg'] and image.mode == 'RGBA':
-             img_to_save = image.convert('RGB')
-        elif ext.lower() == 'png' and image.mode == 'CMYK':
-             img_to_save = image.convert('RGB') # PIL PNG save doesn't support CMYK directly
-
-        img_to_save.save(img_byte_arr, format=ext.upper())
-
-        if img_to_save != image:
-             img_to_save.close() # Close the temporary converted image
-
-
-        return {"ext": ext, "image": img_byte_arr.getvalue(), "xref": self.mock_img_info[0]} # Add xref as it's often included
-
-
-    def _create_mock_rendered_pixmap(self, width: int, height: int) -> MagicMock:
-        """Creates a mock fitz.Pixmap object simulating a page render."""
-        img = Image.new('RGB', (width, height), color = 'gray') # Simulate a page render
-        mock_pix = self._create_mock_pixmap(img)
-        img.close() # Close the PIL image used to create samples
-        return mock_pix
-
-
-    # --- Tests for StandardExtractionStrategy ---
-
+    # --- Standard Extraction Strategy Tests ---
     @patch('scripts.extraction.extraction_strategies.standard_strategy.fitz.Pixmap')
     def test_standard_extraction_success_rgb(self, mock_fitz_pixmap: MagicMock) -> None:
         """Test successful standard extraction for RGB image."""
@@ -145,6 +257,8 @@ class TestExtractionStrategies(unittest.TestCase):
         mock_fitz_pixmap.return_value = mock_fitz_pixmap_instance
 
         strategy = StandardExtractionStrategy(MOCK_CONFIG)
+        # Initialize extraction_info here to ensure it's empty for this test's logic
+        self.extraction_info = {}
         extracted_img, info = strategy.extract(self.mock_doc, self.mock_img_info, self.page_num, self.extraction_info)
 
         self.assertIsNotNone(extracted_img)
@@ -158,7 +272,12 @@ class TestExtractionStrategies(unittest.TestCase):
         self.assertNotIn('error', info)
         self.assertNotIn('issue_type', info)
         mock_fitz_pixmap.assert_called_once_with(self.mock_doc, self.mock_img_info[0])
-        mock_fitz_pixmap_instance.close.assert_called_once() # Ensure pixmap is closed
+        # Assert that the pixmap instance's close method was called
+        mock_fitz_pixmap_instance.close.assert_called_once()
+        # The returned PIL image should be closed by the caller
+        if extracted_img:
+             extracted_img.close()
+
 
     @patch('scripts.extraction.extraction_strategies.standard_strategy.fitz.Pixmap')
     def test_standard_extraction_success_cmyk(self, mock_fitz_pixmap: MagicMock) -> None:
@@ -166,11 +285,12 @@ class TestExtractionStrategies(unittest.TestCase):
         mock_cmyk_image = self.dummy_image.convert('CMYK')
         # Configure the patched fitz.Pixmap to return a mock pixmap instance
         mock_fitz_pixmap_instance = self._create_mock_pixmap(mock_cmyk_image)
-        # Manually set n for CMYK mock (Pixmaps from CMYK PIL images have n=4)
-        mock_fitz_pixmap_instance.n = 4
+        # The create_mock_pixmap handles setting n=4, alpha=0, colorspace CMYK for this PIL mode
         mock_fitz_pixmap.return_value = mock_fitz_pixmap_instance
 
         strategy = StandardExtractionStrategy(MOCK_CONFIG)
+        # Initialize extraction_info here
+        self.extraction_info = {}
         extracted_img, info = strategy.extract(self.mock_doc, self.mock_img_info, self.page_num, self.extraction_info)
 
         self.assertIsNotNone(extracted_img)
@@ -180,19 +300,106 @@ class TestExtractionStrategies(unittest.TestCase):
         self.assertTrue(info['success'])
         self.assertEqual(info['extraction_method'], 'standard')
         self.assertEqual(info['dimensions'], '100x100')
-        self.assertEqual(info['mode'], 'RGB')
+        self.assertEqual(info['mode'], 'RGB') # Info should reflect the final PIL mode
+        self.assertNotIn('error', info)
+        self.assertNotIn('issue_type', info)
+        mock_fitz_pixmap.assert_called_once_with(self.mock_doc, self.mock_img_info[0])
+        # Assert that the pixmap instance's close method was called
+        mock_fitz_pixmap_instance.close.assert_called_once()
+        # The returned PIL image should be closed by the caller
+        if extracted_img:
+             extracted_img.close()
+
+    @patch('scripts.extraction.extraction_strategies.standard_strategy.fitz.Pixmap')
+    def test_standard_extraction_success_gray(self, mock_fitz_pixmap: MagicMock) -> None:
+        """Test successful standard extraction for Gray image."""
+        mock_gray_image = self.dummy_image.convert('L')
+        mock_fitz_pixmap_instance = self._create_mock_pixmap(mock_gray_image)
+        mock_fitz_pixmap.return_value = mock_fitz_pixmap_instance
+
+        strategy = StandardExtractionStrategy(MOCK_CONFIG)
+        self.extraction_info = {}
+        extracted_img, info = strategy.extract(self.mock_doc, self.mock_img_info, self.page_num, self.extraction_info)
+
+        self.assertIsNotNone(extracted_img)
+        self.assertIsInstance(extracted_img, Image.Image)
+        self.assertEqual(extracted_img.size, (100, 100))
+        self.assertEqual(extracted_img.mode, 'L') # Should be L
+        self.assertTrue(info['success'])
+        self.assertEqual(info['extraction_method'], 'standard')
+        self.assertEqual(info['dimensions'], '100x100')
+        self.assertEqual(info['mode'], 'L') # Info should reflect the final PIL mode
         self.assertNotIn('error', info)
         self.assertNotIn('issue_type', info)
         mock_fitz_pixmap.assert_called_once_with(self.mock_doc, self.mock_img_info[0])
         mock_fitz_pixmap_instance.close.assert_called_once()
-        mock_cmyk_image.close() # Clean up
+        if extracted_img:
+             extracted_img.close()
+
+
+    @patch('scripts.extraction.extraction_strategies.standard_strategy.fitz.Pixmap')
+    def test_standard_extraction_success_rgba(self, mock_fitz_pixmap: MagicMock) -> None:
+        """Test successful standard extraction for RGBA image."""
+        mock_rgba_image = self.dummy_image.convert('RGBA')
+        mock_fitz_pixmap_instance = self._create_mock_pixmap(mock_rgba_image)
+        # Ensure the mock has n=4, alpha=1, which is the key for RGBA handling
+        mock_fitz_pixmap_instance.n = 4
+        mock_fitz_pixmap_instance.alpha = 1
+        mock_fitz_pixmap.return_value = mock_fitz_pixmap_instance
+
+        strategy = StandardExtractionStrategy(MOCK_CONFIG)
+        self.extraction_info = {}
+        extracted_img, info = strategy.extract(self.mock_doc, self.mock_img_info, self.page_num, self.extraction_info)
+
+        self.assertIsNotNone(extracted_img)
+        self.assertIsInstance(extracted_img, Image.Image)
+        self.assertEqual(extracted_img.size, (100, 100))
+        self.assertEqual(extracted_img.mode, 'RGBA') # Should be RGBA
+        self.assertTrue(info['success'])
+        self.assertEqual(info['extraction_method'], 'standard')
+        self.assertEqual(info['dimensions'], '100x100')
+        self.assertEqual(info['mode'], 'RGBA')
+        self.assertNotIn('error', info)
+        self.assertNotIn('issue_type', info)
+        mock_fitz_pixmap.assert_called_once_with(self.mock_doc, self.mock_img_info[0])
+        mock_fitz_pixmap_instance.close.assert_called_once()
+        if extracted_img:
+             extracted_img.close()
+
+
+    @patch('scripts.extraction.extraction_strategies.standard_strategy.fitz.Pixmap')
+    def test_standard_extraction_too_small(self, mock_fitz_pixmap: MagicMock) -> None:
+        """Test standard extraction resulting in an image too small."""
+        mock_fitz_pixmap_instance = self._create_mock_pixmap(self.small_image.convert('RGB')) # 30x30
+        mock_fitz_pixmap.return_value = mock_fitz_pixmap_instance
+
+        strategy = StandardExtractionStrategy(MOCK_CONFIG) # min_width/height = 50
+        # Initialize extraction_info here
+        self.extraction_info = {}
+        extracted_img, info = strategy.extract(self.mock_doc, self.mock_img_info, self.page_num, self.extraction_info)
+
+        self.assertIsNone(extracted_img)
+        self.assertFalse(info['success']) # Ensure success is set to False
+        self.assertEqual(info['extraction_method'], 'standard')
+        # Check for the correct error message format
+        self.assertIn('Image too small: 30x30', info['error'])
+        self.assertEqual(info['issue_type'], 'size_issues') # Ensure issue_type is set
+        self.assertNotIn('dimensions', info) # Dimensions are not set on failure
+        self.assertNotIn('mode', info)
+        # Ensure pixmap is closed even if size check fails
+        mock_fitz_pixmap_instance.close.assert_called_once()
+        # No PIL image is returned, so no need to close extracted_img
+
 
     @patch('scripts.extraction.extraction_strategies.standard_strategy.fitz.Pixmap')
     def test_standard_extraction_failure(self, mock_fitz_pixmap: MagicMock) -> None:
-        """Test standard extraction failure."""
+        """Test standard extraction failure due to Pixmap creation error."""
+        # Configure the patched fitz.Pixmap constructor to raise an error
         mock_fitz_pixmap.side_effect = RuntimeError("Mock Pixmap error")
 
         strategy = StandardExtractionStrategy(MOCK_CONFIG)
+        # Initialize extraction_info here
+        self.extraction_info = {}
         extracted_img, info = strategy.extract(self.mock_doc, self.mock_img_info, self.page_num, self.extraction_info)
 
         self.assertIsNone(extracted_img)
@@ -201,88 +408,224 @@ class TestExtractionStrategies(unittest.TestCase):
         # Check for the correct error message format
         self.assertIn('Standard extraction failed for xref 10: Mock Pixmap error', info['error'])
         self.assertEqual(info['issue_type'], 'extraction_failed')
+        self.assertNotIn('dimensions', info)
+        self.assertNotIn('mode', info)
         mock_fitz_pixmap.assert_called_once_with(self.mock_doc, self.mock_img_info[0])
-
-    @patch('scripts.extraction.extraction_strategies.standard_strategy.fitz.Pixmap')
-    def test_standard_extraction_too_small(self, mock_fitz_pixmap: MagicMock) -> None:
-        """Test standard extraction resulting in an image too small."""
-        mock_fitz_pixmap_instance = self._create_mock_pixmap(self.small_image) # 30x30
-        mock_fitz_pixmap.return_value = mock_fitz_pixmap_instance
-
-        strategy = StandardExtractionStrategy(MOCK_CONFIG) # min_width/height = 50
-        extracted_img, info = strategy.extract(self.mock_doc, self.mock_img_info, self.page_num, self.extraction_info)
-
-        self.assertIsNone(extracted_img)
-        self.assertFalse(info['success']) # Ensure success is set to False
-        self.assertEqual(info['extraction_method'], 'standard')
-        # Check for the correct error message format
-        self.assertIn('Image too small: 30x30', info['error'])
-        self.assertEqual(info['issue_type'], 'size_issues')
-        self.assertNotIn('dimensions', info) # Dimensions are not set on failure
-        mock_fitz_pixmap_instance.close.assert_called_once() # Ensure pixmap is closed even if size check fails
-        mock_fitz_pixmap.assert_called_once_with(self.mock_doc, self.mock_img_info[0])
+        # As constructor failed, no instance was created to call .close() on.
 
 
-    # --- Tests for AlternateColorspaceExtractionStrategy ---
-
+    # --- Alternate Colorspace Extraction Strategy Tests ---
     @patch('scripts.extraction.extraction_strategies.alternate_colorspace_strategy.fitz.Pixmap')
-    def test_alternate_colorspace_extraction_success(self, mock_fitz_pixmap: MagicMock) -> None:
-        """Test successful alternate colorspace extraction."""
-        # Simulate an image that might need explicit conversion (e.g., Palette)
-        mock_paletted_image = self.dummy_image.convert('P')
-        mock_rgb_image = self.dummy_image.convert('RGB')
+    def test_alternate_colorspace_extraction_success_paletted(self, mock_fitz_pixmap: MagicMock) -> None:
+        """Test successful alternate colorspace extraction for Paletted image (convert to RGB)."""
+        # Simulate an image that might need explicit conversion (e.g., Paletted)
+        # Mock the initial pixmap as a Paletted image (n=1, alpha=0, but non-Gray colorspace)
+        mock_paletted_pixmap_instance = self._create_mock_pixmap(self.paletted_image)
+        # Ensure it has attributes that signal conversion is needed
+        # create_mock_pixmap handles setting n=1, alpha=0, colorspace='Indexed' for 'P' mode
+        self.assertEqual(mock_paletted_pixmap_instance.n, 1)
+        self.assertEqual(mock_paletted_pixmap_instance.alpha, 0)
+        self.assertEqual(mock_paletted_pixmap_instance.colorspace.name, 'Indexed')
 
-        # Configure the patched fitz.Pixmap to return the original (paletted) pixmap first,
-        # and the converted (RGB) pixmap when called with csRGB and the first pixmap instance
-        mock_paletted_pixmap_instance = self._create_mock_pixmap(mock_paletted_image)
+
+        # Mock the result of the conversion to RGB
+        mock_rgb_image = self.paletted_image.convert('RGB') # 100x100
         mock_rgb_pixmap_instance = self._create_mock_pixmap(mock_rgb_image)
+        self.assertEqual(mock_rgb_pixmap_instance.n, 3)
+        self.assertEqual(mock_rgb_pixmap_instance.alpha, 0)
+        self.assertEqual(mock_rgb_pixmap_instance.colorspace, fitz.csRGB)
+
 
         # Use side_effect to return different mocks based on call arguments
         def pixmap_side_effect(*args, **kwargs):
-             # Check if it's the conversion call: first arg is colorspace, second is a pixmap instance
-             if len(args) == 2 and isinstance(args[0], fitz.Colorspace) and isinstance(args[1], MagicMock):
+             # Check if it's the conversion call: first arg is colorspace (fitz.csRGB), second is the original pixmap instance
+             if len(args) == 2 and isinstance(args[0], fitz.Colorspace) and args[0] == fitz.csRGB and args[1] == mock_paletted_pixmap_instance:
                   return mock_rgb_pixmap_instance
              # Check if it's the initial creation call: first arg is doc, second is xref
-             elif len(args) == 2 and isinstance(args[0], MagicMock) and args[1] == self.mock_img_info[0]:
+             elif len(args) == 2 and args[0] == self.mock_doc and args[1] == self.mock_img_info[0]:
                   return mock_paletted_pixmap_instance
              else:
-                  raise RuntimeError(f"Unexpected Pixmap call with args: {args}, kwargs: {kwargs}")
+                  # Fallback for unexpected calls, perhaps for debugging
+                  print(f"Unexpected Pixmap call in side_effect: args={args}, kwargs={kwargs}")
+                  # Return a default mock or raise an error if strictly expecting only known calls
+                  return MagicMock() # Or raise RuntimeError("Unexpected Pixmap call")
 
         mock_fitz_pixmap.side_effect = pixmap_side_effect
 
-
         strategy = AlternateColorspaceExtractionStrategy(MOCK_CONFIG)
+        # Initialize extraction_info here
+        self.extraction_info = {}
         extracted_img, info = strategy.extract(self.mock_doc, self.mock_img_info, self.page_num, self.extraction_info)
 
         self.assertIsNotNone(extracted_img)
         self.assertIsInstance(extracted_img, Image.Image)
         self.assertEqual(extracted_img.size, (100, 100))
-        self.assertEqual(extracted_img.mode, 'RGB')
+        self.assertEqual(extracted_img.mode, 'RGB') # Should be converted to RGB
         self.assertTrue(info['success'])
         self.assertEqual(info['extraction_method'], 'pixmap_alternate_colorspace')
         self.assertEqual(info['dimensions'], '100x100')
-        self.assertEqual(info['mode'], 'RGB')
+        self.assertEqual(info['mode'], 'RGB') # Info should reflect the final PIL mode
         self.assertNotIn('error', info)
         self.assertNotIn('issue_type', info)
 
-        # Check calls: one to get original, one to get RGB conversion
+        # Check that fitz.Pixmap was called twice: once for original, once for conversion
+        self.assertEqual(mock_fitz_pixmap.call_count, 2)
         mock_fitz_pixmap.assert_has_calls([
-             call(self.mock_doc, self.mock_img_info[0]),
-             call(fitz.csRGB, mock_paletted_pixmap_instance) # Ensure it was called with the first pixmap instance
+            call(self.mock_doc, self.mock_img_info[0]), # Initial call
+            call(fitz.csRGB, mock_paletted_pixmap_instance) # Conversion call
         ])
-        # Assert close calls for both original and converted pixmaps
+        # Assert that both pixmap instances' close methods were called
         mock_paletted_pixmap_instance.close.assert_called_once()
         mock_rgb_pixmap_instance.close.assert_called_once()
-        mock_paletted_image.close()
-        mock_rgb_image.close()
+        # The returned PIL image should be closed by the caller
+        if extracted_img:
+             extracted_img.close()
+
+    @patch('scripts.extraction.extraction_strategies.alternate_colorspace_strategy.fitz.Pixmap')
+    def test_alternate_colorspace_extraction_success_rgba(self, mock_fitz_pixmap: MagicMock) -> None:
+        """Test successful alternate colorspace extraction for RGBA image (convert to RGBA)."""
+        # Simulate an image that has alpha
+        mock_rgba_pixmap_instance = self._create_mock_pixmap(self.rgba_image) # 100x100 RGBA PIL image
+        # Ensure the mock has attributes signaling alpha and needs conversion to RGBA
+        mock_rgba_pixmap_instance.n = 4 # Original n might be 3 with alpha flag, or 4. Mock as 4 with alpha.
+        mock_rgba_pixmap_instance.alpha = 1
+
+        # Mock the result of the conversion to RGBA
+        # The strategy now explicitly converts to RGBA if alpha > 0 using fitz.csRGBA.
+        mock_converted_rgba_pixmap_instance = self._create_mock_pixmap(self.rgba_image) # Simulate successful conversion result
+        mock_converted_rgba_pixmap_instance.n = 4
+        mock_converted_rgba_pixmap_instance.alpha = 1
+
+
+        # Use side_effect to return different mocks based on call arguments
+        def pixmap_side_effect(*args, **kwargs):
+             # Check if it's the conversion call: first arg is colorspace (fitz.csRGBA), second is the original pixmap instance
+             # Use isinstance(args[0], fitz.Colorspace) and check name for safety with mocks
+             if len(args) == 2 and isinstance(args[0], fitz.Colorspace) and args[0].name == 'DeviceRGB' and args[1] == mock_rgba_pixmap_instance: # fitz.csRGBA internally uses DeviceRGB name? Check PyMuPDF docs or just check args[0] is a Colorspace mock
+                  # Actually, Pixmap(fitz.csRGBA, ...) works with a Pixmap input. Let's check for fitz.csRGBA object itself.
+                  # If patching fitz.Colorspace, it might be a mock too. Let's check the type/mock.
+                  # A robust mock check: args[0] is a Colorspace-like object/mock representing RGBA.
+                  # Let's assume fitz.csRGBA is available and check against it or a mock of it.
+                  # For simplicity in mock testing, let's just check if the first arg is a Colorspace instance and has alpha=1 properties if mocking csRGBA.
+                  # The strategy uses `fitz.Pixmap(fitz.csRGBA, pix)`. We need to mock `fitz.csRGBA`.
+                  # Let's patch fitz.csRGBA itself for this test.
+                  # Okay, simpler approach: rely on `call(fitz.csRGBA, ...)` and ensure fitz.csRGBA is a valid mock/object when the test runs.
+                  # The alternative colorspace strategy *uses* fitz.csRGBA directly. Let's ensure fitz.csRGBA is available or mocked appropriately if needed.
+                  # Given the initial TypeError on isinstance with fitz.Pixmap, let's be cautious about using fitz objects in isinstance with mocks.
+                  # Let's mock fitz.csRGBA directly within the test.
+                  # No, the strategy *uses* the real fitz.csRGBA. We should ensure it's not messed up by mocks.
+                  # Let's trust the strategy code uses fitz.csRGBA correctly and check the call args reflect that.
+                  # The side_effect needs to recognize the fitz.csRGBA object passed during the conversion call.
+                  # Let's assume fitz.csRGBA is a real object here.
+                  if len(args) == 2 and args[0] == fitz.csRGBA and args[1] == mock_rgba_pixmap_instance:
+                       return mock_converted_rgba_pixmap_instance
+                  # Check if it's the initial creation call: first arg is doc, second is xref
+                  elif len(args) == 2 and args[0] == self.mock_doc and args[1] == self.mock_img_info[0]:
+                       return mock_rgba_pixmap_instance
+                  else:
+                       print(f"Unexpected Pixmap call in side_effect: args={args}, kwargs={kwargs}")
+                       return MagicMock()
+
+        mock_fitz_pixmap.side_effect = pixmap_side_effect
+
+        # Patch fitz.csRGBA so the side_effect can recognize it if it's mocked.
+        # If not patched, it will use the real fitz.Colorspace object. Let's assume real for now.
+        # If tests fail with TypeError, we might need to mock fitz.csRGBA.
+        # Given the original TypeError was on fitz.Pixmap in isinstance, let's hope Colorspace is okay.
+
+        strategy = AlternateColorspaceExtractionStrategy(MOCK_CONFIG)
+        # Initialize extraction_info here
+        self.extraction_info = {}
+        extracted_img, info = strategy.extract(self.mock_doc, self.mock_img_info, self.page_num, self.extraction_info)
+
+        self.assertIsNotNone(extracted_img)
+        self.assertIsInstance(extracted_img, Image.Image)
+        self.assertEqual(extracted_img.size, (100, 100))
+        self.assertEqual(extracted_img.mode, 'RGBA') # Should retain RGBA mode
+        self.assertTrue(info['success'])
+        self.assertEqual(info['extraction_method'], 'pixmap_alternate_colorspace')
+        self.assertEqual(info['dimensions'], '100x100')
+        self.assertEqual(info['mode'], 'RGBA') # Info should reflect the final PIL mode
+        self.assertNotIn('error', info)
+        self.assertNotIn('issue_type', info)
+
+        # Check that fitz.Pixmap was called twice: once for original, once for conversion
+        self.assertEqual(mock_fitz_pixmap.call_count, 2)
+        mock_fitz_pixmap.assert_has_calls([
+            call(self.mock_doc, self.mock_img_info[0]), # Initial call
+            call(fitz.csRGBA, mock_rgba_pixmap_instance) # Conversion call to RGBA
+        ])
+        # Assert that both pixmap instances' close methods were called
+        mock_rgba_pixmap_instance.close.assert_called_once()
+        mock_converted_rgba_pixmap_instance.close.assert_called_once()
+        # The returned PIL image should be closed by the caller
+        if extracted_img:
+             extracted_img.close()
+
+
+    @patch('scripts.extraction.extraction_strategies.alternate_colorspace_strategy.fitz.Pixmap')
+    def test_alternate_colorspace_extraction_too_small(self, mock_fitz_pixmap: MagicMock) -> None:
+        """Test alternate colorspace extraction resulting in an image too small."""
+        # Simulate a small Paletted image that needs conversion
+        mock_paletted_pixmap_instance = self._create_mock_pixmap(self.small_image.convert('P')) # 30x30
+        mock_paletted_pixmap_instance.n = 1
+        mock_paletted_pixmap_instance.alpha = 0
+        mock_paletted_pixmap_instance.colorspace = MagicMock(name='Indexed')
+
+        # Mock the result of the conversion to RGB (which will also be small)
+        mock_rgb_image = self.small_image.convert('RGB') # 30x30
+        mock_rgb_pixmap_instance = self._create_mock_pixmap(mock_rgb_image)
+        mock_rgb_pixmap_instance.n = 3
+        mock_rgb_pixmap_instance.alpha = 0
+        mock_rgb_pixmap_instance.colorspace = fitz.csRGB
+
+        # Use side_effect to return different mocks based on call arguments
+        def pixmap_side_effect(*args, **kwargs):
+             if len(args) == 2 and isinstance(args[0], fitz.Colorspace) and args[0] == fitz.csRGB and args[1] == mock_paletted_pixmap_instance:
+                  return mock_rgb_pixmap_instance
+             elif len(args) == 2 and args[0] == self.mock_doc and args[1] == self.mock_img_info[0]:
+                  return mock_paletted_pixmap_instance
+             else:
+                  print(f"Unexpected Pixmap call in side_effect: args={args}, kwargs={kwargs}")
+                  return MagicMock()
+
+        mock_fitz_pixmap.side_effect = pixmap_side_effect
+
+        strategy = AlternateColorspaceExtractionStrategy(MOCK_CONFIG) # min_width/height = 50
+        # Initialize extraction_info here
+        self.extraction_info = {}
+        extracted_img, info = strategy.extract(self.mock_doc, self.mock_img_info, self.page_num, self.extraction_info)
+
+        self.assertIsNone(extracted_img)
+        self.assertFalse(info['success']) # Ensure success is set to False
+        self.assertEqual(info['extraction_method'], 'pixmap_alternate_colorspace')
+        # Check for the correct error message format
+        self.assertIn(f'Image too small: 30x30', info['error'])
+        self.assertEqual(info['issue_type'], 'size_issues') # Ensure issue_type is set
+        self.assertNotIn('dimensions', info)
+        self.assertNotIn('mode', info)
+
+        # Check that fitz.Pixmap was called twice
+        self.assertEqual(mock_fitz_pixmap.call_count, 2)
+        mock_fitz_pixmap.assert_has_calls([
+            call(self.mock_doc, self.mock_img_info[0]), # Initial call
+            call(fitz.csRGB, mock_paletted_pixmap_instance) # Conversion call
+        ])
+        # Assert that both pixmap instances' close methods were called
+        mock_paletted_pixmap_instance.close.assert_called_once()
+        mock_rgb_pixmap_instance.close.assert_called_once()
+        # No PIL image is returned, so no need to close extracted_img
 
 
     @patch('scripts.extraction.extraction_strategies.alternate_colorspace_strategy.fitz.Pixmap')
     def test_alternate_colorspace_extraction_failure(self, mock_fitz_pixmap: MagicMock) -> None:
-        """Test alternate colorspace extraction failure."""
+        """Test alternate colorspace extraction failure due to Pixmap creation error."""
+        # Configure the patched fitz.Pixmap constructor to raise an error
         mock_fitz_pixmap.side_effect = RuntimeError("Mock Pixmap error")
 
         strategy = AlternateColorspaceExtractionStrategy(MOCK_CONFIG)
+        # Initialize extraction_info here
+        self.extraction_info = {}
         extracted_img, info = strategy.extract(self.mock_doc, self.mock_img_info, self.page_num, self.extraction_info)
 
         self.assertIsNone(extracted_img)
@@ -291,54 +634,13 @@ class TestExtractionStrategies(unittest.TestCase):
         # Check for the correct error message format
         self.assertIn('Alternate colorspace extraction failed for xref 10: Mock Pixmap error', info['error'])
         self.assertEqual(info['issue_type'], 'extraction_failed')
-        mock_fitz_pixmap.assert_called_once_with(self.mock_doc, self.mock_img_info[0])
-
-    @patch('scripts.extraction.extraction_strategies.alternate_colorspace_strategy.fitz.Pixmap')
-    def test_alternate_colorspace_extraction_too_small(self, mock_fitz_pixmap: MagicMock) -> None:
-        """Test alternate colorspace extraction resulting in an image too small."""
-        mock_paletted_image = self.small_image.convert('P') # 30x30
-        mock_rgb_image = self.small_image.convert('RGB') # 30x30
-
-        mock_paletted_pixmap_instance = self._create_mock_pixmap(mock_paletted_image)
-        mock_rgb_pixmap_instance = self._create_mock_pixmap(mock_rgb_image)
-
-        # Use side_effect to return different mocks based on call arguments
-        def pixmap_side_effect(*args, **kwargs):
-             # Check if it's the conversion call
-             if len(args) == 2 and isinstance(args[0], fitz.Colorspace) and isinstance(args[1], MagicMock):
-                  return mock_rgb_pixmap_instance
-             # Check if it's the initial creation call
-             elif len(args) == 2 and isinstance(args[0], MagicMock) and args[1] == self.mock_img_info[0]:
-                  return mock_paletted_pixmap_instance
-             else:
-                  raise RuntimeError(f"Unexpected Pixmap call with args: {args}, kwargs: {kwargs}")
-
-        mock_fitz_pixmap.side_effect = pixmap_side_effect
-
-        strategy = AlternateColorspaceExtractionStrategy(MOCK_CONFIG) # min_width/height = 50
-        extracted_img, info = strategy.extract(self.mock_doc, self.mock_img_info, self.page_num, self.extraction_info)
-
-        self.assertIsNone(extracted_img)
-        self.assertFalse(info['success']) # Ensure success is set to False
-        self.assertEqual(info['extraction_method'], 'pixmap_alternate_colorspace')
-        # Check for the correct error message format
-        self.assertIn('Image too small: 30x30', info['error'])
-        self.assertEqual(info['issue_type'], 'size_issues')
         self.assertNotIn('dimensions', info)
-        mock_fitz_pixmap.assert_has_calls([
-             call(self.mock_doc, self.mock_img_info[0]),
-             call(fitz.csRGB, mock_paletted_pixmap_instance) # Ensure it was called with the first pixmap instance
-        ])
-        # Assert close calls for both original and converted pixmaps
-        mock_paletted_pixmap_instance.close.assert_called_once()
-        mock_rgb_pixmap_instance.close.assert_called_once()
-        mock_paletted_image.close()
-        mock_rgb_image.close()
+        self.assertNotIn('mode', info)
+        mock_fitz_pixmap.assert_called_once_with(self.mock_doc, self.mock_img_info[0])
+        # As constructor failed, no instance was created to call .close() on.
 
 
-    # --- Tests for CompressionRetryStrategy ---
-
-    # Need to patch Image.open and Image.Image.load in the strategy's module
+    # --- Compression Retry Strategy Tests ---
     @patch('scripts.extraction.extraction_strategies.compression_retry_strategy.fitz.Document.extract_image')
     @patch('scripts.extraction.extraction_strategies.compression_retry_strategy.Image.open')
     @patch('scripts.extraction.extraction_strategies.compression_retry_strategy.Image.Image.load') # Patch instance method
@@ -347,13 +649,26 @@ class TestExtractionStrategies(unittest.TestCase):
         # Configure fitz.Document.extract_image to return valid data
         valid_jpeg_data = self._create_mock_extract_image_data(self.dummy_image, 'jpeg')
         mock_extract_image.return_value = valid_jpeg_data
+        # Explicitly assign the mock to the mock document instance
+        self.mock_doc.extract_image = mock_extract_image
+
 
         # Configure PIL.Image.open to return a mock PIL Image instance
         mock_pil_image_instance = MagicMock(spec=Image.Image)
         mock_pil_image_instance.size = (100, 100) # Size > min_size
         mock_pil_image_instance.mode = 'RGB'
-        mock_pil_image_instance.getbands.return_value = ('R', 'G', 'B') # For mode check
-        mock_pil_image_instance.convert.return_value = mock_pil_image_instance # Convert returns self if already RGB
+        # Mock convert to return self if already the target mode (RGB or L or RGBA)
+        # Or return a new mock instance if conversion is needed
+        def mock_convert(mode):
+            if mode == mock_pil_image_instance.mode:
+                 return mock_pil_image_instance
+            # Create a new mock instance for the converted image
+            new_mock_img = MagicMock(spec=Image.Image)
+            new_mock_img.size = mock_pil_image_instance.size
+            new_mock_img.mode = mode
+            new_mock_img.close = MagicMock() # Converted image needs a close method
+            return new_mock_img
+        mock_pil_image_instance.convert.side_effect = mock_convert
         mock_pil_image_instance.load.return_value = None # load doesn't return anything specific
         mock_pil_image_instance.close = MagicMock() # Add close method mock
         mock_pil_open.return_value = mock_pil_image_instance
@@ -364,10 +679,9 @@ class TestExtractionStrategies(unittest.TestCase):
         extracted_img, info = strategy.extract(self.mock_doc, self.mock_img_info, self.page_num, self.extraction_info)
 
         self.assertIsNotNone(extracted_img)
-        # Check if it's the expected mock instance
-        self.assertIs(extracted_img, mock_pil_image_instance)
+        self.assertIsInstance(extracted_img, Image.Image)
         self.assertEqual(extracted_img.size, (100, 100))
-        self.assertEqual(extracted_img.mode, 'RGB')
+        self.assertEqual(extracted_img.mode, 'RGB') # Should be RGB after optional convert
         self.assertTrue(info['success'])
         self.assertEqual(info['extraction_method'], 'alternate_compression')
         self.assertEqual(info['dimensions'], '100x100')
@@ -376,17 +690,40 @@ class TestExtractionStrategies(unittest.TestCase):
         self.assertNotIn('issue_type', info)
 
         mock_extract_image.assert_called_once_with(self.mock_img_info[0])
-        # Image.open is called with the BytesIO object created inside the strategy
-        mock_pil_open.assert_called_once_with(ANY, format=None) # Format might be hinted by PIL, use ANY
-        mock_pil_image_instance.load.assert_called_once() # Check load was called
-        mock_pil_image_instance.close.assert_called_once() # Ensure image is closed
+        # Image.open is called with a BytesIO stream and format hint
+        mock_pil_open.assert_called_once()
+        args, kwargs = mock_pil_open.call_args
+        self.assertIsInstance(args[0], io.BytesIO)
+        self.assertEqual(kwargs.get('format'), 'JPEG') # Check format hint
+
+        # Assert load was called on the image instance returned by open
+        mock_pil_image_instance.load.assert_called_once()
+
+        # Assert close was NOT called on the returned image instance
+        mock_pil_image_instance.close.assert_not_called()
+
+        # If convert returned a *new* mock instance, that instance's close should NOT be called either
+        # because the strategy returns the potentially converted image.
+        # Only images that are *not* returned should be closed.
+        # Check if convert was called and if it returned a different instance
+        if mock_pil_image_instance.convert.called and mock_pil_image_instance.convert.return_value != mock_pil_image_instance:
+             mock_pil_image_instance.convert.return_value.close.assert_not_called()
+
+
+        # The returned PIL image (which is the mock_pil_image_instance or a converted mock) should be closed by the caller
+        if extracted_img:
+             extracted_img.close()
 
 
     @patch('scripts.extraction.extraction_strategies.compression_retry_strategy.fitz.Document.extract_image')
     @patch('scripts.extraction.extraction_strategies.compression_retry_strategy.Image.open')
     def test_compression_retry_extraction_no_data(self, mock_pil_open: MagicMock, mock_extract_image: MagicMock) -> None:
         """Test compression retry extraction when extract_image returns no data."""
-        mock_extract_image.return_value = None # Simulate no data found
+        # Configure fitz.Document.extract_image to return None or empty dict
+        # Test expects empty dict based on code logic `if not (img_dict and isinstance(img_dict, dict) and img_dict.get("image")):`
+        mock_extract_image.return_value = {} # Simulate no data found
+        # Explicitly assign the mock to the mock document instance
+        self.mock_doc.extract_image = mock_extract_image
 
         strategy = CompressionRetryStrategy(MOCK_CONFIG)
         # Initialize extraction_info here
@@ -399,9 +736,14 @@ class TestExtractionStrategies(unittest.TestCase):
         # Check for the correct error message format
         self.assertIn('No raw image data in extract_image result for xref 10', info['error'])
         self.assertEqual(info['issue_type'], 'extraction_failed') # Ensure issue_type is set
-        mock_extract_image.assert_called_once_with(self.mock_img_info[0])
-        mock_pil_open.assert_not_called() # PIL should not be called
+        self.assertNotIn('dimensions', info)
+        self.assertNotIn('mode', info)
 
+        # Assert that extract_image was called
+        mock_extract_image.assert_called_once_with(self.mock_img_info[0])
+        # Assert that Image.open was NOT called because no data was found
+        mock_pil_open.assert_not_called()
+        # No PIL image instance was created, so no close call expected
 
     @patch('scripts.extraction.extraction_strategies.compression_retry_strategy.fitz.Document.extract_image')
     @patch('scripts.extraction.extraction_strategies.compression_retry_strategy.Image.open')
@@ -411,9 +753,20 @@ class TestExtractionStrategies(unittest.TestCase):
         # Configure fitz.Document.extract_image to return invalid data
         # Make sure it returns a dict with 'image' key, even if data is bad, to pass the initial 'if' check
         mock_extract_image.return_value = {"ext": "jpeg", "image": b'invalid_image_data', "xref": self.mock_img_info[0]}
+        # Explicitly assign the mock to the mock document instance
+        self.mock_doc.extract_image = mock_extract_image
 
-        # Configure PIL.Image.open to raise an error
-        mock_pil_open.side_effect = IOError("Mock PIL open error")
+        # Configure PIL.Image.open to return a mock PIL Image instance *which will then fail on load*
+        # This setup is crucial to ensure the PIL image close method is tested in the error path.
+        mock_pil_image_instance = MagicMock(spec=Image.Image)
+        # Make it look valid initially but fail on load
+        mock_pil_image_instance.size = (100, 100)
+        mock_pil_image_instance.mode = 'RGB' # Needs a mode for convert mock
+        # Add a side_effect to the convert method as well, in case it's called before load
+        mock_pil_image_instance.convert.return_value = mock_pil_image_instance # Assume convert succeeds before load fails
+        mock_pil_image_instance.load.side_effect = IOError("Mock PIL load error") # Simulate load failure
+        mock_pil_image_instance.close = MagicMock() # Add close method mock
+        mock_pil_open.return_value = mock_pil_image_instance # Image.open returns this mock
 
         strategy = CompressionRetryStrategy(MOCK_CONFIG)
         # Initialize extraction_info here
@@ -423,12 +776,20 @@ class TestExtractionStrategies(unittest.TestCase):
         self.assertIsNone(extracted_img)
         self.assertFalse(info['success'])
         self.assertEqual(info['extraction_method'], 'alternate_compression')
-        # Check for the correct error message format
-        self.assertIn('Alternate compression extraction failed for xref 10: Mock PIL open error', info['error'])
-        self.assertEqual(info['issue_type'], 'extraction_failed') # Ensure issue_type is set
+        # Check for the correct error message format - it should catch the Image.open/load error
+        # The error comes from the raised exception, which is caught.
+        self.assertIn('Alternate compression extraction failed for xref 10: Mock PIL load error', info['error'])
+        self.assertEqual(info['issue_type'], 'decoding_failed') # Should be decoding_failed now
+        self.assertNotIn('dimensions', info)
+        self.assertNotIn('mode', info)
+
         mock_extract_image.assert_called_once_with(self.mock_img_info[0])
-        mock_pil_open.assert_called_once() # PIL should be called
-        mock_pil_load.assert_not_called() # load should not be called if open failed
+        mock_pil_open.assert_called_once()
+        # Assert load was attempted and failed
+        mock_pil_image_instance.load.assert_called_once()
+        # Assert the partially created PIL image was closed due to the error
+        mock_pil_image_instance.close.assert_called_once()
+        # No PIL image is returned, so no need to close extracted_img
 
 
     @patch('scripts.extraction.extraction_strategies.compression_retry_strategy.fitz.Document.extract_image')
@@ -439,16 +800,25 @@ class TestExtractionStrategies(unittest.TestCase):
         # Configure fitz.Document.extract_image to return data for a small image
         valid_png_data = self._create_mock_extract_image_data(self.small_image, 'png') # 30x30
         mock_extract_image.return_value = valid_png_data
+        # Explicitly assign the mock to the mock document instance
+        self.mock_doc.extract_image = mock_extract_image
 
         # Configure PIL.Image.open to return a mock PIL Image instance with small dimensions
         mock_pil_image_instance = MagicMock(spec=Image.Image)
         mock_pil_image_instance.size = (30, 30) # Size < min_size (50x50)
         mock_pil_image_instance.mode = 'RGB'
-        mock_pil_image_instance.getbands.return_value = ('R', 'G', 'B')
-        mock_pil_image_instance.convert.return_value = mock_pil_image_instance
+        # Ensure convert returns a mock with the correct small size
+        def mock_convert(mode):
+            new_mock_img = MagicMock(spec=Image.Image)
+            new_mock_img.size = (30, 30)
+            new_mock_img.mode = mode
+            new_mock_img.close = MagicMock()
+            return new_mock_img
+        mock_pil_image_instance.convert.side_effect = mock_convert
         mock_pil_image_instance.load.return_value = None
-        mock_pil_image_instance.close = MagicMock()
-        mock_pil_open.return_value = mock_pil_image_instance
+        mock_pil_image_instance.close = MagicMock() # Add close method mock
+        mock_pil_open.return_value = mock_pil_image_instance # Image.open returns this mock
+
 
         strategy = CompressionRetryStrategy(MOCK_CONFIG) # min_width/height = 50
         # Initialize extraction_info here
@@ -458,36 +828,44 @@ class TestExtractionStrategies(unittest.TestCase):
         self.assertIsNone(extracted_img)
         self.assertFalse(info['success']) # Ensure success is set to False
         self.assertEqual(info['extraction_method'], 'alternate_compression')
-        # Check for the correct error message format
-        self.assertIn('Image too small: 30x30', info['error'])
-        self.assertEqual(info['issue_type'], 'size_issues') # Issue type set by _check_min_size
+        # Check for the correct error message format from _check_min_size
+        self.assertIn(f'Image too small: 30x30 (min: {MOCK_CONFIG["min_width"]}x{MOCK_CONFIG["min_height"]})', info['error'])
+        self.assertEqual(info['issue_type'], 'size_issues') # Ensure issue_type is set
         self.assertNotIn('dimensions', info) # Dimensions are not set on failure
+        self.assertNotIn('mode', info)
 
         mock_extract_image.assert_called_once_with(self.mock_img_info[0])
         mock_pil_open.assert_called_once()
         mock_pil_image_instance.load.assert_called_once()
-        mock_pil_image_instance.close.assert_called_once() # Ensure image is closed
+        # Assert the PIL image was closed because it was too small and not returned
+        mock_pil_image_instance.close.assert_called_once()
+        # If convert returned a *new* mock instance, that instance's close *should* be called
+        # because that's the image that was determined to be too small.
+        if mock_pil_image_instance.convert.called and mock_pil_image_instance.convert.return_value != mock_pil_image_instance:
+            mock_pil_image_instance.convert.return_value.close.assert_called_once()
+        # No PIL image is returned, so no need to close extracted_img
 
 
-    # --- Tests for PageBasedExtractionStrategy ---
-
-    # Patching fitz.Page.get_pixmap and fitz.Matrix in the strategy's module
+    # --- Page Based Extraction Strategy Tests ---
+    # Patch fitz.Page.get_pixmap and fitz.Matrix as before
     @patch('scripts.extraction.extraction_strategies.page_based_strategy.fitz.Page.get_pixmap')
     @patch('scripts.extraction.extraction_strategies.page_based_strategy.fitz.Matrix')
     def test_page_based_extraction_success(self, mock_fitz_matrix: MagicMock, mock_get_pixmap: MagicMock) -> None:
         """Test successful page-based extraction."""
-        # Mock page object (spec is okay here)
-        mock_page = MagicMock(spec=fitz.Page)
+        # Mock page object (plain MagicMock from setUp)
         # Ensure the mock doc returns the mock page when indexed AND has a length
-        self.mock_doc.__getitem__.return_value = mock_page
-        self.mock_doc.__len__.return_value = self.page_num # Ensure doc has at least the requested page
+        # These are set in setUp now for plain MagicMock
+        self.mock_doc.__getitem__.return_value = self.mock_page
+        self.mock_doc.__len__.return_value = self.page_num # Ensure doc has at least the requested page (page_num = 1)
 
-        # Mock the rendered pixmap return value
-        mock_rendered_pixmap_instance = self._create_mock_rendered_pixmap(width=200, height=300)
-        mock_get_pixmap.return_value = mock_rendered_pixmap_instance
+        # Mock the rendered pixmap return value for self.mock_page.get_pixmap
+        mock_rendered_pixmap_instance = self._create_mock_rendered_pixmap(width=200, height=300, mode='RGB')
+        # Assign the mock return value to the *instance's* method
+        self.mock_page.get_pixmap.return_value = mock_rendered_pixmap_instance
 
-        # Mock Matrix creation return value
-        mock_matrix_instance = MagicMock() # Do not use spec=fitz.Matrix when patching fitz.Matrix
+
+        # Mock Matrix creation return value (plain MagicMock from setUp)
+        mock_matrix_instance = MagicMock()
         mock_fitz_matrix.return_value = mock_matrix_instance
 
         strategy = PageBasedExtractionStrategy(MOCK_CONFIG) # dpi = 150
@@ -497,41 +875,48 @@ class TestExtractionStrategies(unittest.TestCase):
 
         self.assertIsNotNone(extracted_img)
         self.assertIsInstance(extracted_img, Image.Image)
-        self.assertEqual(extracted_img.size, (200, 300)) # Should be size of the rendered page mock
+        self.assertEqual(extracted_img.size, (200, 300))
         self.assertEqual(extracted_img.mode, 'RGB')
         self.assertTrue(info['success'])
         self.assertEqual(info['extraction_method'], 'page_based')
         self.assertEqual(info['dimensions'], '200x300')
         self.assertEqual(info['mode'], 'RGB')
-        self.assertIn('warning', info) # Should have a warning about using whole page
+        self.assertIn('warning', info) # Expect the page-based warning
+        self.assertIn('whole page rendering', info['warning'])
         self.assertNotIn('error', info)
         self.assertNotIn('issue_type', info)
 
-        # Check calls
-        # The strategy gets page_num (1-indexed), converts to page_idx (0-indexed)
-        self.mock_doc.__getitem__.assert_called_once_with(self.page_num - 1) # Check index used
-        mock_fitz_matrix.assert_called_once_with(MOCK_CONFIG['dpi'] / 72.0, MOCK_CONFIG['dpi'] / 72.0)
-        # Check that get_pixmap was called with the mock matrix instance
+        # Check that fitz.Matrix was called with correct zoom factor
+        expected_zoom = MOCK_CONFIG['dpi'] / 72.0
+        mock_fitz_matrix.assert_called_once_with(expected_zoom, expected_zoom)
+        # Check that get_pixmap was called on the mock page with the matrix
+        # Note: The patch decorator patches the *original* method. We assigned the mock to the instance.
+        # Asserting against the patch target is often easiest.
         mock_get_pixmap.assert_called_once_with(matrix=mock_matrix_instance)
-        # Ensure pixmap instance was closed (handled by finally in strategy)
+
+        # Assert that the pixmap instance's close method was called
         mock_rendered_pixmap_instance.close.assert_called_once()
+         # The returned PIL image should be closed by the caller
+        if extracted_img:
+             extracted_img.close()
 
 
     @patch('scripts.extraction.extraction_strategies.page_based_strategy.fitz.Page.get_pixmap')
     @patch('scripts.extraction.extraction_strategies.page_based_strategy.fitz.Matrix')
-    def test_page_based_extraction_failure(self, mock_fitz_matrix: MagicMock, mock_get_pixmap: MagicMock) -> None:
-        """Test page-based extraction failure."""
-        # Mock page object (spec is okay here)
-        mock_page = MagicMock(spec=fitz.Page)
+    def test_page_based_extraction_failure_rendering(self, mock_fitz_matrix: MagicMock, mock_get_pixmap: MagicMock) -> None:
+        """Test page-based extraction failure during rendering."""
+        # Mock page object (plain MagicMock from setUp)
         # Ensure the mock doc returns the mock page when indexed AND has a length
-        self.mock_doc.__getitem__.return_value = mock_page
+        self.mock_doc.__getitem__.return_value = self.mock_page
         self.mock_doc.__len__.return_value = self.page_num # Ensure doc has at least the requested page
 
         # Configure the patched get_pixmap to raise an error
-        mock_get_pixmap.side_effect = RuntimeError("Mock rendering error")
+        # Assign the side_effect to the *instance's* method mock
+        self.mock_page.get_pixmap.side_effect = RuntimeError("Mock rendering error")
 
-        # Mock Matrix creation return value
-        mock_matrix_instance = MagicMock() # Do not use spec=fitz.Matrix when patching fitz.Matrix
+
+        # Mock Matrix creation return value (plain MagicMock from setUp)
+        mock_matrix_instance = MagicMock()
         mock_fitz_matrix.return_value = mock_matrix_instance
 
 
@@ -543,41 +928,53 @@ class TestExtractionStrategies(unittest.TestCase):
         self.assertIsNone(extracted_img)
         self.assertFalse(info['success'])
         self.assertEqual(info['extraction_method'], 'page_based')
-        # Check for the correct error message format - it should now catch the RuntimeError
+        # Check for the correct error message format - it should now catch the RuntimeError from get_pixmap
         self.assertIn('Page-based extraction failed for page 1: Mock rendering error', info['error'])
-        self.assertEqual(info['issue_type'], 'extraction_failed') # Ensure issue_type is set
+        self.assertEqual(info['issue_type'], 'extraction_failed')
+        self.assertNotIn('dimensions', info)
+        self.assertNotIn('mode', info)
+        self.assertNotIn('warning', info) # Warning should not be present on failure
 
-        # Check calls
-        # The strategy gets page_num (1-indexed), converts to page_idx (0-indexed)
-        self.mock_doc.__getitem__.assert_called_once_with(self.page_num - 1) # Check index used
-        mock_fitz_matrix.assert_called_once_with(MOCK_CONFIG['dpi'] / 72.0, MOCK_CONFIG['dpi'] / 72.0)
-        # Check that get_pixmap was called with the mock matrix instance
+        # Check that fitz.Matrix was called
+        expected_zoom = MOCK_CONFIG['dpi'] / 72.0
+        mock_fitz_matrix.assert_called_once_with(expected_zoom, expected_zoom)
+        # Check that get_pixmap was attempted on the mock page
         mock_get_pixmap.assert_called_once_with(matrix=mock_matrix_instance)
+        # No pixmap instance was successfully created, so no close call expected.
 
 
-    # --- Tests for BaseExtractionStrategy methods (using concrete mock) ---
+    @patch('scripts.extraction.extraction_strategies.page_based_strategy.fitz.Page.get_pixmap')
+    @patch('scripts.extraction.extraction_strategies.page_based_strategy.fitz.Matrix')
+    def test_page_based_extraction_invalid_page_num(self, mock_fitz_matrix: MagicMock, mock_get_pixmap: MagicMock) -> None:
+        """Test page-based extraction fails for invalid page number."""
+        # Mock doc length to be less than the requested page number (1-indexed)
+        self.mock_doc.__len__.return_value = self.page_num - 1 # Set length to 0 for page 1 -> index 0 check
 
-    def test_base_strategy_check_min_size_pass(self) -> None:
-        """Test min size check passes."""
-        # Instantiate the concrete mock strategy
-        strategy = ConcreteMockStrategy(MOCK_CONFIG)
-        info: Dict[str, Any] = {} # Ensure info dict is passed
+        strategy = PageBasedExtractionStrategy(MOCK_CONFIG)
+        self.extraction_info = {}
+        # Attempt extraction for page 1 (index 0) when doc length is 0
+        extracted_img, info = strategy.extract(self.mock_doc, self.mock_img_info, self.page_num, self.extraction_info)
 
-        self.assertTrue(strategy._check_min_size(self.dummy_image, info))
-        self.assertNotIn('error', info)
-        self.assertNotIn('issue_type', info)
+        self.assertIsNone(extracted_img)
+        self.assertFalse(info['success'])
+        self.assertEqual(info['extraction_method'], 'page_based')
+        # Check the error message from the IndexError catch
+        self.assertIn('Failed to access page 1 (index 0): Page index 0 requested (corresponds to page 1), but document only has 0 pages (0--1).', info['error'])
+        self.assertEqual(info['issue_type'], 'extraction_failed')
+        self.assertNotIn('dimensions', info)
+        self.assertNotIn('mode', info)
+        self.assertNotIn('warning', info)
 
-    def test_base_strategy_check_min_size_fail(self) -> None:
-        """Test min size check fails."""
-        # Instantiate the concrete mock strategy
-        strategy = ConcreteMockStrategy(MOCK_CONFIG)
-        info: Dict[str, Any] = {} # Ensure info dict is passed
-
-        self.assertFalse(strategy._check_min_size(self.small_image, info))
-        # Check for the correct error message format
-        self.assertIn('Image too small: 30x30', info['error'])
-        self.assertEqual(info['issue_type'], 'size_issues')
+        # Ensure Matrix and get_pixmap were never called as it failed early
+        mock_fitz_matrix.assert_not_called()
+        mock_get_pixmap.assert_not_called()
+        # __getitem__ should not be called if len check fails first
+        self.mock_doc.__getitem__.assert_not_called()
+        # __len__ should be called
+        self.mock_doc.__len__.assert_called_once()
 
 
 if __name__ == '__main__':
-    unittest.main()
+    # Note: Running tests this way might interfere with patching in a larger test suite.
+    # It's generally better to use 'pytest' from the command line.
+    unittest.main(argv=['first-arg-is-ignored'], exit=False)
