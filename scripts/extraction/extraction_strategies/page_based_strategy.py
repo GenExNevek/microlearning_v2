@@ -26,6 +26,12 @@ class PageBasedExtractionStrategy(BaseExtractionStrategy):
         """
         Attempt extraction by rendering the whole page.
 
+        This strategy is a last resort for cases where image-specific extraction
+        methods fail. It renders the entire page containing the image as a single
+        image, effectively capturing the image as part of the page content.
+        The image boundaries on the page are not considered by this strategy,
+        and the entire page image is returned.
+
         Args:
             pdf_document: The PyMuPDF document object.
             img_info: The image information tuple (used for context, not extraction itself).
@@ -44,7 +50,7 @@ class PageBasedExtractionStrategy(BaseExtractionStrategy):
 
 
         try:
-            # Ensure document is valid and page exists
+            # Ensure document is valid
             if pdf_document is None:
                  raise ValueError("PDF document object is None.")
 
@@ -84,7 +90,7 @@ class PageBasedExtractionStrategy(BaseExtractionStrategy):
                 # This call might fail (e.g., invalid PDF data on page)
                 pix = page.get_pixmap(matrix=matrix)
             except Exception as rendering_error:
-                 error = f"Page-based extraction failed for page {page_num} during rendering: {str(rendering_error)}"
+                 error = f"Page-based extraction failed for page {page_num} during pixmap rendering: {str(rendering_error)}"
                  logger.debug(error)
                  extracted_image = None
                  extraction_info['success'] = False
