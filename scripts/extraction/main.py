@@ -10,14 +10,6 @@ from .markdown_formatter import MarkdownFormatter
 from .file_writer import FileWriter
 from .image_extractor import ImageExtractor, generate_extraction_report
 from ..config import settings
-from ..config.tracing import initialise_tracing
-from ..utils.langsmith_utils import (
-    traced_operation, 
-    trace_batch_operation, 
-    extract_file_metadata, 
-    get_image_extraction_summary,
-    generate_batch_report
-)
 
 # Configure logging
 log_filename = f"extraction_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
@@ -31,10 +23,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-@traced_operation(
-    "pdf_transformation",
-    metadata_extractor=lambda source_file, target_file: extract_file_metadata(source_file)
-)
+
 def transform_pdf_to_markdown(source_file, target_file):
     """
     Transform a PDF file to a markdown file.
@@ -125,6 +114,7 @@ def transform_pdf_to_markdown(source_file, target_file):
         logger.error(f"Exception processing {source_file}: {str(e)}")
         return False
 
+
 def process_image_extraction_results(extraction_results, source_file, target_file, img_assets_folder):
     """
     Process image extraction results and generate a single diagnostic report in the img-assets folder.
@@ -175,6 +165,7 @@ def process_image_extraction_results(extraction_results, source_file, target_fil
         logger.warning(f"Generated image extraction report: {report_path}")
     
     return has_issues
+
 
 def create_placeholder_images(img_assets_folder):
     """
@@ -231,7 +222,7 @@ def create_placeholder_images(img_assets_folder):
             except Exception as e:
                 logger.warning(f"Failed to create placeholder image {placeholder_name}: {e}")
 
-@traced_operation("single_file_processing")
+
 def process_single_file(pdf_path):
     """Process a single PDF file."""
     # Normalize path
@@ -250,7 +241,7 @@ def process_single_file(pdf_path):
         'failures': [] if success else [pdf_path]
     }
 
-@traced_operation("directory_processing")
+
 def process_directory(directory_path):
     """Process all PDF files in a directory and its subdirectories."""
     # Normalize path
@@ -271,48 +262,15 @@ def process_directory(directory_path):
     logger.info(f"Processing directory: {source_dir}")
     logger.info(f"Target directory: {target_dir}")
     
-    # Use batch tracing
-    with trace_batch_operation(f"directory_{os.path.basename(directory_path)}") as batch_tracer:
-        results = FileWriter.mirror_directory_structure(
-            source_dir, 
-            target_dir,
-            transform_func=lambda src, tgt: _transform_with_progress(src, tgt, batch_tracer)
-        )
-        
-        # Generate a single batch summary report at the module level if there were issues
-        extraction_summary = get_image_extraction_summary()
-        
-        if extraction_summary.get('problematic_documents', 0) > 0:
-            # Only generate a single batch report in the module root
-            batch_report_path = os.path.join(target_dir, "batch_image_extraction_summary.md")
-            
-            # Get batch report content but don't save it
-            batch_report = generate_batch_report(None)
-            
-            # Write it ourselves to the specific location
-            if batch_report.get('report_text'):
-                with open(batch_report_path, 'w', encoding='utf-8') as f:
-                    f.write(batch_report['report_text'])
-                
-                logger.warning(f"Generated batch summary report: {batch_report_path}")
-                logger.warning(f"Found {batch_report['problematic_documents']} documents with image extraction issues")
+    results = FileWriter.mirror_directory_structure(
+        source_dir, 
+        target_dir,
+        transform_func=transform_pdf_to_markdown
+    )
     
     return results
 
-def _transform_with_progress(source_file, target_file, batch_tracer):
-    """Transform file with batch progress tracking."""
-    try:
-        success = transform_pdf_to_markdown(source_file, target_file)
-        if success:
-            batch_tracer.update_progress(processed=1)
-        else:
-            batch_tracer.update_progress(failed=1)
-        return success
-    except Exception:
-        batch_tracer.update_progress(failed=1)
-        raise
 
-@traced_operation("batch_processing")
 def process_batch(batch_id=None):
     """
     Process a batch of PDF files.
@@ -329,6 +287,7 @@ def process_batch(batch_id=None):
     
     return process_directory(settings.PDF_SOURCE_DIR)
 
+
 def validate_image_extraction():
     """Validate that image extraction dependencies are properly installed."""
     try:
@@ -341,11 +300,9 @@ def validate_image_extraction():
         logger.warning("Please install: pip install PyMuPDF Pillow")
         return False
 
+
 def main():
     """Main entry point for the extraction script."""
-    # Initialise tracing
-    initialise_tracing()
-    
     parser = argparse.ArgumentParser(description='Extract Rise PDF content to markdown with images.')
     parser.add_argument('--file', help='Single PDF file to process')
     parser.add_argument('--dir', help='Directory containing PDF files to process')
@@ -441,38 +398,19 @@ def main():
     # Calculate elapsed time
     elapsed_time = datetime.now() - start_time
     
-    # Get image extraction summary
-    extraction_summary = get_image_extraction_summary()
-    
     # Log the results
     logger.info(f"Processing complete in {elapsed_time}")
     logger.info(f"Successes: {results['success_count']}")
     logger.info(f"Failures: {results['failure_count']}")
-    
-    # Log image extraction results
-    if extraction_summary.get('document_count', 0) > 0:
-        logger.info(f"Image extraction summary:")
-        logger.info(f"  - Documents processed: {extraction_summary.get('document_count', 0)}")
-        logger.info(f"  - Documents with issues: {extraction_summary.get('problematic_documents', 0)}")
-        logger.info(f"  - Total images: {extraction_summary.get('total_images', 0)}")
-        logger.info(f"  - Successfully extracted: {extraction_summary.get('extracted_images', 0)}")
-        logger.info(f"  - Failed extractions: {extraction_summary.get('failed_images', 0)}")
-        logger.info(f"  - Validation issues: {extraction_summary.get('validation_failures', 0)}")
-        logger.info(f"  - Overall success rate: {extraction_summary.get('success_rate', '0%')}")
     
     if results['failure_count'] > 0:
         logger.info("Failed files:")
         for failure in results['failures']:
             logger.info(f"  - {failure}")
     
-    # Check for problematic documents
-    if extraction_summary.get('problematic_documents', 0) > 0:
-        logger.warning(f"Found {extraction_summary.get('problematic_documents', 0)} documents with image extraction issues:")
-        for doc in extraction_summary.get('problematic_documents_list', []):
-            logger.warning(f"  - {doc['path']}")
-    
     logger.info("Use --check-deps to verify all dependencies are installed correctly.")
     logger.info(f"Extraction log saved to: {log_filename}")
+
 
 if __name__ == "__main__":
     main()

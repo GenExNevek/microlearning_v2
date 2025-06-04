@@ -5,7 +5,6 @@ import io
 from google import genai
 from google.genai import types
 from ..config import settings
-from ..utils.langsmith_utils import traced_operation, trace_api_call, extract_file_metadata
 
 class PDFReader:
     """Handles PDF reading and interaction with Gemini API."""
@@ -41,7 +40,6 @@ class PDFReader:
             'normalized_path': file_path  # Keep normalized path for image extraction
         }
     
-    @traced_operation("pdf_file_api_processing")    
     def _prepare_file_api_processing(self, file_path):
         """Prepare PDF for processing via File API."""
         return {
@@ -50,7 +48,6 @@ class PDFReader:
             'normalized_path': file_path  # Keep normalized path for image extraction
         }
     
-    @traced_operation("pdf_test_reading")
     def test_pdf_reading(self, pdf_info):
         """Test if Gemini can read the PDF by requesting a simple summary."""
         try:
@@ -80,7 +77,6 @@ class PDFReader:
                 'pdf_info': pdf_info
             }
     
-    @trace_api_call(model_id=settings.GEMINI_MODEL, operation="generate_content_direct")
     def _generate_content_direct(self, pdf_data, prompt):
         """Generate content using direct PDF data."""
         return self.client.models.generate_content(
@@ -94,7 +90,6 @@ class PDFReader:
             ]
         )
     
-    @trace_api_call(model_id=settings.GEMINI_MODEL, operation="generate_content_file_api")
     def _generate_content_file_api(self, file_path, prompt):
         """Generate content using File API."""
         file_obj = self.client.files.upload(

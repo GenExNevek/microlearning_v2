@@ -8,7 +8,6 @@ import io
 import time
 from typing import Dict, List, Optional, Tuple, Any
 from ..config import settings
-from ..utils.langsmith_utils import traced_operation, extract_file_metadata
 from ..utils.image_validation import ImageValidator, ImageValidationResult, ImageIssueType
 
 logger = logging.getLogger(__name__)
@@ -51,10 +50,6 @@ class ImageExtractor:
             "issue_types": {issue_type.value: 0 for issue_type in ImageIssueType}
         }
     
-    @traced_operation(
-        "pdf_image_extraction",
-        metadata_extractor=lambda self, pdf_path, output_dir: extract_file_metadata(pdf_path)
-    )
     def extract_images_from_pdf(self, pdf_path: str, output_dir: str) -> Dict[str, Any]:
         """
         Extract all images from a PDF file and save them to the specified directory.

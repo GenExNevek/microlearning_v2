@@ -9,7 +9,6 @@ from google.genai import types  # Add this import
 from ..config.extraction_prompt import get_extraction_prompt
 from ..config import settings
 from .image_extractor import ImageExtractor, generate_extraction_report
-from ..utils.langsmith_utils import traced_operation, extract_file_metadata
 from ..utils.image_validation import ImageIssueType
 
 logger = logging.getLogger(__name__)
@@ -22,7 +21,6 @@ class MarkdownFormatter:
         self.pdf_reader = pdf_reader
         self.image_extractor = ImageExtractor()
     
-    @traced_operation("metadata_extraction")
     def extract_metadata_from_path(self, pdf_path):
         """Extract metadata from PDF path components."""
         # Normalize path separators
@@ -73,10 +71,6 @@ class MarkdownFormatter:
             'extraction_date': datetime.now().strftime('%Y-%m-%d')
         }
     
-    @traced_operation(
-        "content_extraction_and_formatting",
-        metadata_extractor=lambda self, pdf_info, metadata=None: extract_file_metadata(pdf_info.get('path', ''))
-    )
     def extract_and_format(self, pdf_info, metadata=None):
         """Extract content from PDF and format as markdown."""
         # If metadata not provided, try to extract from path
@@ -129,7 +123,6 @@ class MarkdownFormatter:
                 'image_extraction': image_extraction_results
             }
     
-    @traced_operation("image_extraction")
     def _extract_images(self, pdf_info, metadata):
         """Extract images from the PDF file."""
         # Get the PDF path
@@ -179,7 +172,6 @@ class MarkdownFormatter:
         
         return img_assets_dir
     
-    @traced_operation("markdown_post_processing")
     def post_process_markdown(self, content, metadata, image_extraction_results=None):
         """Apply post-processing to the generated markdown."""
         logger.info("Starting markdown post-processing")

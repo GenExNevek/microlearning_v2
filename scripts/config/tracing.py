@@ -1,86 +1,62 @@
-"""LangSmith tracing configuration for the extraction pipeline."""
+"""LangSmith tracing configuration module."""
 
 import os
 import logging
-from langsmith import Client, trace
-from langsmith.evaluation import evaluate
-from langchain_core.tracers import LangChainTracer
-from . import settings
+from typing import Optional
+from langsmith import Client
+from langsmith.utils import LangSmithError
 
 logger = logging.getLogger(__name__)
 
 
 class TracingConfig:
-    """Configuration and management for LangSmith tracing."""
+    """Configuration and client management for LangSmith tracing."""
     
     def __init__(self):
         """Initialise tracing configuration."""
-        self.enabled = settings.LANGSMITH_TRACING_ENABLED
-        self.client = None
-        self.tracer = None
+        self.enabled = os.getenv("LANGSMITH_TRACING_V2", "").lower() == "true"
+        self.api_key = os.getenv("LANGSMITH_API_KEY")
+        self.project_name = os.getenv("LANGSMITH_PROJECT", "microlearning-extraction")
+        self.endpoint = os.getenv("LANGSMITH_ENDPOINT", "https://api.smith.langchain.com")
         
-    def initialise(self):
-        """Initialise LangSmith client and tracer."""
-        if not self.enabled:
-            logger.info("LangSmith tracing is disabled")
-            return
-            
-        if not settings.LANGSMITH_API_KEY:
-            logger.warning("LANGSMITH_API_KEY not set - tracing disabled")
-            self.enabled = False
-            return
-            
-        try:
-            self.client = Client(
-                api_key=settings.LANGSMITH_API_KEY,
-                api_url=settings.LANGSMITH_ENDPOINT
-            )
-            
-            self.tracer = LangChainTracer(
-                project_name=settings.LANGSMITH_PROJECT,
-                client=self.client
-            )
-            
-            logger.info(f"LangSmith tracing initialised for project: {settings.LANGSMITH_PROJECT}")
-            
-        except Exception as e:
-            logger.error(f"Failed to initialise LangSmith tracing: {e}")
+        self._client: Optional[Client] = None
+        
+        if self.enabled and not self.api_key:
+            logger.warning("LANGSMITH_TRACING_V2 is enabled but LANGSMITH_API_KEY is not set")
             self.enabled = False
     
-    def get_run_metadata(self, operation_type, file_path=None):
-        """Generate metadata for a traced run."""
-        metadata = {
-            "operation": operation_type,
-            "environment": os.getenv("ENVIRONMENT", "development"),
-            "extraction_model": settings.GEMINI_MODEL
-        }
-        
-        if file_path:
-            metadata["file_path"] = file_path
-            metadata["file_size"] = os.path.getsize(file_path) if os.path.exists(file_path) else None
+    @property
+    def client(self) -> Optional[Client]:
+        """Get or create LangSmith client."""
+        if not self.enabled:
+            return None
             
-        return metadata
+        if self._client is None and self.api_key:
+            try:
+                self._client = Client(
+                    api_url=self.endpoint,
+                    api_key=self.api_key
+                )
+                logger.info(f"LangSmith client initialised for project: {self.project_name}")
+            except Exception as e:
+                logger.error(f"Failed to initialise LangSmith client: {e}")
+                self.enabled = False
+                
+        return self._client
+    
+    def is_configured(self) -> bool:
+        """Check if tracing is properly configured and enabled."""
+        return self.enabled and self.api_key is not None
+    
+    def get_project_url(self) -> Optional[str]:
+        """Get the URL for the current project in LangSmith UI."""
+        if not self.is_configured():
+            return None
+            
+        # Construct the project URL
+        base_url = self.endpoint.replace("/api", "")
+        return f"{base_url}/o/-/projects/p/{self.project_name}"
 
 
-# Global tracing instance
-_tracing_config = TracingConfig()
-
-
-def initialise_tracing():
-    """Initialise global tracing configuration."""
-    _tracing_config.initialise()
-
-
-def get_tracer():
-    """Get the LangChain tracer instance."""
-    return _tracing_config.tracer
-
-
-def is_tracing_enabled():
-    """Check if tracing is enabled."""
-    return _tracing_config.enabled
-
-
-def create_run_metadata(operation_type, **kwargs):
-    """Create metadata for a traced run."""
-    return _tracing_config.get_run_metadata(operation_type, **kwargs)
+# Global instance
+tracing_config = TracingConfig()
