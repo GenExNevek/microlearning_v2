@@ -4,9 +4,10 @@
 
 import fitz
 from PIL import Image
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 from abc import ABC, abstractmethod
 import logging
+
 
 logger = logging.getLogger(__name__)
 
