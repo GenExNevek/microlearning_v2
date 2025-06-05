@@ -21,8 +21,8 @@ class ExtractionReporter:
         self.errors: List[str] = []
         self.pdf_path: Optional[str] = None
         self.start_time: Optional[float] = None
-        self.extracted_count: int = 0 # Track successful extractions for summary
-        self.failed_count: int = 0 # Track total failed attempts to get an image
+        self.extracted_count: int = 0 # Tracks fully successful extractions (extracted, saved, valid)
+        self.failed_count: int = 0 # Tracks images that failed at any point in the pipeline
 
     def _reset_metrics(self) -> Dict[str, Any]:
         """Resets metrics for a new document."""
@@ -31,8 +31,9 @@ class ExtractionReporter:
             "attempted_extractions": 0, # Total images extraction was attempted for
             "successful_extractions": 0, # Successfully extracted (produced PIL image)
             "failed_extractions": 0, # Failed to extract (did not produce PIL image)
-            "validation_failures": 0, # Extracted but failed validation
+            "validation_failures": 0, # Extracted but failed ImageIssueType validation
             "retry_successes": 0, # Successful extraction after initial standard failure
+            # Initialize with known ImageIssueTypes; others (like 'extraction_failed', 'save_error') will be added dynamically
             "issue_types": {issue_type.value: 0 for issue_type in ImageIssueType},
             "total_extraction_duration": 0.0, # Sum of time spent in coordinate_extraction
         }
@@ -51,7 +52,7 @@ class ExtractionReporter:
     def track_image_attempt(self, img_info: tuple):
         """Tracks that an attempt will be made for an image."""
         self.metrics["total_images_in_doc"] += 1
-        # Attempted extractions are counted when coordinate_extraction is called
+        # Attempted extractions are counted when track_extraction_result is called
 
     def track_extraction_result(self, extraction_info: Dict, processing_result: Dict):
         """
@@ -66,71 +67,85 @@ class ExtractionReporter:
 
         is_extracted = extraction_info.get('success', False)
         is_saved_and_valid = processing_result.get('success', False)
-        is_validation_failed = processing_result.get('issue_type') is not None
+        
+        current_issue_type_str: Optional[str] = None 
 
         if is_extracted:
             self.metrics["successful_extractions"] += 1
-            self.extracted_count += 1
 
             if is_saved_and_valid:
-                # Fully successful pipeline
-                pass # No problematic image added
-            elif is_validation_failed:
-                # Extracted but failed validation
-                self.metrics["validation_failures"] += 1
-                self.failed_count += 1 # Count validation failures as problematic failures for summary
-                issue_type = processing_result.get('issue_type')
-                if issue_type:
-                    self.metrics['issue_types'][issue_type] = self.metrics['issue_types'].get(issue_type, 0) + 1
+                self.extracted_count += 1 # Fully successful pipeline: extracted, saved, and valid
+                # No problematic image or error entry for fully successful cases
+            else: 
+                # Extracted, but processing or validation failed
+                self.failed_count += 1
+                
+                current_issue_type_str = processing_result.get('issue_type')
+                is_actual_image_issue_type_failure = False
+                if current_issue_type_str:
+                    try:
+                        ImageIssueType(current_issue_type_str) # Check if it's a known ImageIssueType value
+                        is_actual_image_issue_type_failure = True
+                    except ValueError:
+                        # Not an ImageIssueType, could be 'save_error', 'processing_error', etc.
+                        pass 
+
+                if is_actual_image_issue_type_failure:
+                    self.metrics["validation_failures"] += 1
+                
+                # Log the issue type in metrics['issue_types']
+                if current_issue_type_str:
+                    if current_issue_type_str not in self.metrics['issue_types']:
+                        self.metrics['issue_types'][current_issue_type_str] = 0
+                    self.metrics['issue_types'][current_issue_type_str] += 1
+                else:
+                    # Fallback if no issue_type provided on processing failure, but success is False
+                    current_issue_type_str = 'processing_failed' 
+                    if current_issue_type_str not in self.metrics['issue_types']:
+                        self.metrics['issue_types'][current_issue_type_str] = 0
+                    self.metrics['issue_types'][current_issue_type_str] += 1
 
                 self.problematic_images.append({
                     'page': extraction_info.get('page', 'unknown'),
                     'index_on_page': extraction_info.get('index_on_page', 'unknown'),
                     'xref': extraction_info.get('xref', 'unknown'),
-                    'issue': processing_result.get('issue', 'Validation failed'),
-                    'issue_type': issue_type,
+                    'issue': processing_result.get('issue', 'Processing or Validation failed'),
+                    'issue_type': current_issue_type_str,
                     'extraction_info': extraction_info,
                     'validation_info': processing_result.get('validation_info', {})
                 })
-                self.errors.append(f"Validation failed for image on page {extraction_info.get('page')}, index {extraction_info.get('index_on_page')}: {processing_result.get('issue')}")
+                self.errors.append(
+                    f"Processing/Validation failed for image on page {extraction_info.get('page')}, "
+                    f"index {extraction_info.get('index_on_page')}: {processing_result.get('issue')}"
+                )
 
-            else: # Extracted but something went wrong during save/post-processing
-                 self.failed_count += 1
-                 self.problematic_images.append({
-                    'page': extraction_info.get('page', 'unknown'),
-                    'index_on_page': extraction_info.get('index_on_page', 'unknown'),
-                    'xref': extraction_info.get('xref', 'unknown'),
-                    'issue': processing_result.get('issue', 'Saving/Processing failed'),
-                    'issue_type': processing_result.get('issue_type', 'processing_failed'),
-                    'extraction_info': extraction_info,
-                    'validation_info': processing_result.get('validation_info', {})
-                })
-                 self.errors.append(f"Saving/Processing failed for image on page {extraction_info.get('page')}, index {extraction_info.get('index_on_page')}: {processing_result.get('issue')}")
-
-
-            # Check if extraction succeeded on a retry method (not the first attempt's strategy)
+            # Check if extraction succeeded on a retry (applies if extraction itself was successful)
             if len(extraction_info.get('attempts', [])) > 1 and extraction_info['success']:
                  self.metrics['retry_successes'] += 1
-
-
-        else:
-            # Failed to extract (no PIL image produced)
+        
+        else: # Failed to extract (no PIL image produced)
             self.metrics["failed_extractions"] += 1
             self.failed_count += 1
-            issue_type = extraction_info.get('issue_type', 'extraction_failed')
-            self.metrics['issue_types'][issue_type] = self.metrics['issue_types'].get(issue_type, 0) + 1
-
+            
+            current_issue_type_str = extraction_info.get('issue_type', 'extraction_failed')
+            # Log the issue type in metrics['issue_types']
+            if current_issue_type_str not in self.metrics['issue_types']: # Ensure it exists for counting
+                self.metrics['issue_types'][current_issue_type_str] = 0
+            self.metrics['issue_types'][current_issue_type_str] += 1
 
             self.problematic_images.append({
                 'page': extraction_info.get('page', 'unknown'),
                 'index_on_page': extraction_info.get('index_on_page', 'unknown'),
                 'xref': extraction_info.get('xref', 'unknown'),
                 'issue': extraction_info.get('final_error', 'Extraction failed'),
-                'issue_type': issue_type,
+                'issue_type': current_issue_type_str,
                 'extraction_info': extraction_info,
                 # No validation info as extraction failed
             })
-            self.errors.append(f"Extraction failed for image on page {extraction_info.get('page')}, index {extraction_info.get('index_on_page')}: {extraction_info.get('final_error', 'Unknown error.')}")
+            self.errors.append(
+                f"Extraction failed for image on page {extraction_info.get('page')}, "
+                f"index {extraction_info.get('index_on_page')}: {extraction_info.get('final_error', 'Unknown error.')}"
+            )
 
 
     def finalize_report(self, output_dir: Optional[str] = None) -> Dict[str, Any]:
@@ -144,30 +159,35 @@ class ExtractionReporter:
             A dictionary containing the report summary and details.
         """
         end_time = time.time()
-        total_elapsed_time = end_time - self.start_time if self.start_time else 0.0
+        total_elapsed_time = end_time - self.start_time if self.start_time is not None else 0.0
 
         summary = {
             "pdf_path": self.pdf_path,
             "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'),
             "total_elapsed_time": total_elapsed_time,
-            "extracted_count": self.extracted_count,
-            "failed_count": self.failed_count,
+            "extracted_count": self.extracted_count, # Fully successful
+            "failed_count": self.failed_count, # Any failure in pipeline
             "problematic_count": len(self.problematic_images),
             "errors_count": len(self.errors),
             "metrics": self.metrics,
             "problematic_images": self.problematic_images,
             "errors": self.errors,
-            "success": self.failed_count == 0 # Simple success check
+            "success": self.failed_count == 0 
         }
 
         # Determine overall success based on failure ratio
-        total_processed = self.extracted_count + self.failed_count
+        total_processed = self.metrics.get("attempted_extractions", 0) # Use attempted_extractions for ratio base
         failure_ratio = self.failed_count / total_processed if total_processed > 0 else 0
 
         # If more than 25% of images failed or had validation issues, mark as problematic
-        if failure_ratio > 0.25:
+        # Also, if there were any failures at all, it's not a "perfect" success.
+        # The initial summary['success'] = self.failed_count == 0 handles the perfect case.
+        # This adds the ratio check.
+        if self.failed_count > 0 and failure_ratio > 0.25: # Only set to False if not already False due to failed_count > 0
              summary['success'] = False
-             summary['failure_ratio'] = failure_ratio
+        
+        if self.failed_count > 0 : # Add failure ratio if there were any failures
+            summary['failure_ratio'] = failure_ratio
 
 
         # Generate report text
@@ -178,7 +198,6 @@ class ExtractionReporter:
         report_path = None
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
-            # Use PDF filename base for report filename
             pdf_basename = os.path.splitext(os.path.basename(self.pdf_path or "report"))[0]
             report_filename = f"image_extraction_report_{pdf_basename}_{int(time.time())}.md"
             report_path = os.path.join(output_dir, report_filename)
@@ -193,9 +212,8 @@ class ExtractionReporter:
                 summary["report_save_error"] = str(e)
 
 
-        # Log summary
         success_status = "SUCCESSFUL" if summary['success'] else "PROBLEMATIC"
-        logger.info(f"Image extraction {success_status} summary for {summary['pdf_path']}: "
+        logger.info(f"Image extraction {success_status} summary for {summary.get('pdf_path', 'N/A')}: "
                    f"{summary['extracted_count']} extracted, "
                    f"{summary['failed_count']} failed/problematic, "
                    f"{summary['metrics'].get('validation_failures', 0)} validation issues. "
@@ -217,10 +235,12 @@ class ExtractionReporter:
             f"- Attempted extractions: {summary['metrics'].get('attempted_extractions', 0)}",
             f"- Successfully extracted & processed: {summary['extracted_count']}",
             f"- Failed extraction or processing/validation: {summary['failed_count']}",
-            f"- Validation failures (extracted but invalid): {summary['metrics'].get('validation_failures', 0)}",
+            f"- Validation failures (extracted but invalid ImageIssueType): {summary['metrics'].get('validation_failures', 0)}",
             f"- Total problematic images reported: {summary['problematic_count']}",
             f"",
             f"## Detailed Metrics",
+            f"- Successful extractions (PIL image produced): {summary['metrics'].get('successful_extractions', 0)}",
+            f"- Failed extractions (no PIL image produced): {summary['metrics'].get('failed_extractions', 0)}",
             f"- Retry successes (extracted after initial failure): {summary['metrics'].get('retry_successes', 0)}",
             f"- Total extraction time (strategy attempts): {summary['metrics'].get('total_extraction_duration', 0.0):.2f} seconds",
             f"",
@@ -229,15 +249,14 @@ class ExtractionReporter:
 
         issue_types_counts = summary['metrics'].get('issue_types', {})
         if issue_types_counts:
-             # Filter out issue types with zero count for report readability
             present_issue_types = {k: v for k, v in issue_types_counts.items() if v > 0}
             if present_issue_types:
-                for issue_type, count in present_issue_types.items():
+                for issue_type, count in sorted(present_issue_types.items()): # Sort for consistent report order
                     report.append(f"- {issue_type}: {count}")
             else:
-                report.append("- No specific issue types recorded (might be general errors)")
+                report.append("- No specific issue types recorded with counts > 0.")
         else:
-             report.append("- No issue type data available")
+             report.append("- No issue type data available.")
 
 
         report.append("")
@@ -252,16 +271,15 @@ class ExtractionReporter:
                 report.append(f"- **Issue**: {img.get('issue', 'Unknown issue')}")
                 report.append(f"- **Issue Type**: {img.get('issue_type', 'unknown')}")
 
-                # Extraction Info
                 ext_info = img.get('extraction_info', {})
                 report.append(f"- **Extraction Attempts**: {ext_info.get('attempt_count', 0)}")
-                # Detailed attempts history
-                report.append("  - **Attempt History**:")
                 if ext_info.get('attempts'):
-                     for attempt in ext_info['attempts']:
+                     report.append("  - **Attempt History**:")
+                     for attempt_idx, attempt in enumerate(ext_info['attempts']):
                          status = 'SUCCESS' if attempt.get('success') else 'FAILED'
-                         duration = attempt.get('duration', 0.0)
-                         report.append(f"    - Attempt {attempt.get('attempt_num')}: Strategy='{attempt.get('strategy', 'unknown')}', Status={status}, Duration={duration:.4f}s")
+                         duration = attempt.get('duration', 0.0) # Duration might not always be present
+                         attempt_num_str = attempt.get('attempt_num', attempt_idx + 1) # Fallback for attempt_num
+                         report.append(f"    - Attempt {attempt_num_str}: Strategy='{attempt.get('strategy', 'unknown')}', Status={status}, Duration={duration:.4f}s")
                          if attempt.get('error'):
                              report.append(f"      - Error: {attempt['error']}")
                          if attempt.get('details', {}).get('warning'):
@@ -271,16 +289,14 @@ class ExtractionReporter:
                          if attempt.get('details', {}).get('mode'):
                              report.append(f"      - Mode: {attempt['details']['mode']}")
 
-                # Validation Info
                 val_info = img.get('validation_info', {})
-                if val_info:
+                if val_info: # Only show if not empty
                     report.append(f"- **Validation Details**: {val_info}")
-
-                report.append("") # Newline after each image block
+                report.append("") 
 
         report.append("## Errors Log")
-        if self.errors:
-            for error_msg in self.errors:
+        if summary.get('errors'): # Use summary['errors'] as self.errors might be reset
+            for error_msg in summary['errors']:
                 report.append(f"- {error_msg}")
         else:
             report.append("No specific errors were logged.")
