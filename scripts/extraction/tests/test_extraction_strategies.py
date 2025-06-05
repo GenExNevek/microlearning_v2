@@ -180,6 +180,7 @@ class TestExtractionStrategies(unittest.TestCase):
         self.mock_doc.__getitem__ = MagicMock(return_value=self.mock_page)
 
         # Mock the Page.get_pixmap method used by PageBasedStrategy
+        # This will be configured per test for PageBasedStrategy
         self.mock_page.get_pixmap = MagicMock()
 
         # Mock image info tuple (xref, ...) - Minimal required is xref for Standard/Alternate
@@ -218,16 +219,24 @@ class TestExtractionStrategies(unittest.TestCase):
 
     # Helper to create a mock pixmap suitable for page rendering results
     def _create_mock_rendered_pixmap(self, width: int, height: int, mode='RGB') -> MagicMock:
+         """Creates a MagicMock simulating a fitz.Pixmap from page rendering."""
          # Page rendering typically results in RGB or RGBA
          dummy_page_image = create_dummy_image(width, height, mode)
+         if dummy_page_image is None: # Should not happen with create_dummy_image defaults
+             return MagicMock(samples=None, width=0, height=0, alpha=0, close=MagicMock())
+
          # Manually create mock with samples, width, height, alpha based on PIL image
          mock_pix = MagicMock()
-         mock_pix.samples = dummy_page_image.tobytes('raw', dummy_page_image.mode)
+         try:
+             mock_pix.samples = dummy_page_image.tobytes('raw', dummy_page_image.mode)
+         except Exception as e:
+             print(f"Error getting raw bytes for rendered pixmap mock: {e}")
+             mock_pix.samples = None # Ensure samples is None on error
          mock_pix.width, mock_pix.height = dummy_page_image.size
          if mode == 'RGBA':
-            mock_pix.alpha = 1
+            mock_pix.alpha = 1 # Use integer 1 for alpha
          else:
-            mock_pix.alpha = 0 # Fix: Use integer 1 or 0
+            mock_pix.alpha = 0 # Use integer 0 for alpha
          mock_pix.close = MagicMock() # Add a mock close method
          dummy_page_image.close() # Clean up the temp PIL image
          return mock_pix
@@ -874,29 +883,21 @@ class TestExtractionStrategies(unittest.TestCase):
 
 
     # --- Page Based Extraction Strategy Tests ---
-    # Patch fitz.Page.get_pixmap and fitz.Matrix as before
-    @patch('scripts.extraction.extraction_strategies.page_based_strategy.fitz.Page.get_pixmap')
     @patch('scripts.extraction.extraction_strategies.page_based_strategy.fitz.Matrix')
-    def test_page_based_extraction_success(self, mock_fitz_matrix: MagicMock, mock_get_pixmap: MagicMock) -> None:
+    def test_page_based_extraction_success(self, mock_fitz_matrix: MagicMock) -> None:
         """Test successful page-based extraction."""
         # Mock page object (plain MagicMock from setUp)
         # Ensure the mock doc returns the mock page when indexed AND has a length
-        # These are set in setUp now for plain MagicMock
         self.mock_doc.__getitem__.return_value = self.mock_page
         self.mock_doc.__len__.return_value = self.page_num # Ensure doc has at least the requested page (page_num = 1)
 
         # Mock the rendered pixmap return value for self.mock_page.get_pixmap
         mock_rendered_pixmap_instance = self._create_mock_rendered_pixmap(width=200, height=300, mode='RGB')
-        # Assign the mock return value to the *instance's* method
-        # Note: The patch decorator patches the *original* method on the class.
-        # To make the mock work correctly with the instance self.mock_page, we should
-        # set the return_value on the patched mock object, which replaces the method
-        # on all instances (or specifically on the instance if patch.object is used).
-        # Setting return_value on mock_get_pixmap (the patched object) is the correct approach here.
-        mock_get_pixmap.return_value = mock_rendered_pixmap_instance
+        # Assign the mock return value to the instance's method directly
+        self.mock_page.get_pixmap.return_value = mock_rendered_pixmap_instance
 
 
-        # Mock Matrix creation return value (plain MagicMock from setUp)
+        # Mock Matrix creation return value
         mock_matrix_instance = MagicMock()
         mock_fitz_matrix.return_value = mock_matrix_instance
 
@@ -922,8 +923,7 @@ class TestExtractionStrategies(unittest.TestCase):
         expected_zoom = MOCK_CONFIG['dpi'] / 72.0
         mock_fitz_matrix.assert_called_once_with(expected_zoom, expected_zoom)
         # Check that get_pixmap was called on the mock page with the matrix
-        # Asserting against the patch target is the standard way when using @patch
-        mock_get_pixmap.assert_called_once_with(matrix=mock_matrix_instance)
+        self.mock_page.get_pixmap.assert_called_once_with(matrix=mock_matrix_instance)
 
         # Assert that the pixmap instance's close method was called
         mock_rendered_pixmap_instance.close.assert_called_once()
@@ -932,21 +932,19 @@ class TestExtractionStrategies(unittest.TestCase):
              extracted_img.close()
 
 
-    @patch('scripts.extraction.extraction_strategies.page_based_strategy.fitz.Page.get_pixmap')
     @patch('scripts.extraction.extraction_strategies.page_based_strategy.fitz.Matrix')
-    def test_page_based_extraction_failure_rendering(self, mock_fitz_matrix: MagicMock, mock_get_pixmap: MagicMock) -> None:
+    def test_page_based_extraction_failure_rendering(self, mock_fitz_matrix: MagicMock) -> None:
         """Test page-based extraction failure during rendering."""
         # Mock page object (plain MagicMock from setUp)
         # Ensure the mock doc returns the mock page when indexed AND has a length
         self.mock_doc.__getitem__.return_value = self.mock_page
         self.mock_doc.__len__.return_value = self.page_num # Ensure doc has at least the requested page
 
-        # Configure the patched get_pixmap to raise an error
-        # Assign the side_effect to the *patched method object*
-        mock_get_pixmap.side_effect = RuntimeError("Mock rendering error")
+        # Configure the mock page's get_pixmap to raise an error
+        self.mock_page.get_pixmap.side_effect = RuntimeError("Mock rendering error")
 
 
-        # Mock Matrix creation return value (plain MagicMock from setUp)
+        # Mock Matrix creation return value
         mock_matrix_instance = MagicMock()
         mock_fitz_matrix.return_value = mock_matrix_instance
 
@@ -959,8 +957,7 @@ class TestExtractionStrategies(unittest.TestCase):
         self.assertIsNone(extracted_img)
         self.assertFalse(info['success'])
         self.assertEqual(info['extraction_method'], 'page_based')
-        # Check for the correct error message format - it should now catch the RuntimeError from get_pixmap
-        # MODIFIED: Changed expected error message to match strategy's actual output for rendering error
+        # Check for the correct error message format
         self.assertIn('Page-based extraction failed for page 1 during pixmap rendering: Mock rendering error', info['error'])
         self.assertEqual(info['issue_type'], 'rendering_failed') # Issue type should be rendering_failed now
         self.assertNotIn('dimensions', info)
@@ -971,13 +968,12 @@ class TestExtractionStrategies(unittest.TestCase):
         expected_zoom = MOCK_CONFIG['dpi'] / 72.0
         mock_fitz_matrix.assert_called_once_with(expected_zoom, expected_zoom)
         # Check that get_pixmap was attempted on the mock page
-        mock_get_pixmap.assert_called_once_with(matrix=mock_matrix_instance)
+        self.mock_page.get_pixmap.assert_called_once_with(matrix=mock_matrix_instance)
         # No pixmap instance was successfully created, so no close call expected.
 
 
-    @patch('scripts.extraction.extraction_strategies.page_based_strategy.fitz.Page.get_pixmap')
     @patch('scripts.extraction.extraction_strategies.page_based_strategy.fitz.Matrix')
-    def test_page_based_extraction_invalid_page_num(self, mock_fitz_matrix: MagicMock, mock_get_pixmap: MagicMock) -> None:
+    def test_page_based_extraction_invalid_page_num(self, mock_fitz_matrix: MagicMock) -> None:
         """Test page-based extraction fails for invalid page number."""
         # Mock doc length to be less than the requested page number (1-indexed)
         # For page 1 (index 0), doc_length = 0 will cause IndexError
@@ -992,7 +988,6 @@ class TestExtractionStrategies(unittest.TestCase):
         self.assertFalse(info['success'])
         self.assertEqual(info['extraction_method'], 'page_based')
         # Check the error message from the IndexError catch
-        # Message format from the strategy code: "Page index {page_idx} requested (corresponds to page {page_num}), but document only has {doc_length} pages (0-{max(0, doc_length-1)})."
         self.assertIn('Page index 0 requested (corresponds to page 1), but document only has 0 pages (0-0).', info['error']) # Match trailing dot
         self.assertEqual(info['issue_type'], 'extraction_failed')
         self.assertNotIn('dimensions', info)
@@ -1001,7 +996,7 @@ class TestExtractionStrategies(unittest.TestCase):
 
         # Ensure Matrix and get_pixmap were never called as it failed early
         mock_fitz_matrix.assert_not_called()
-        mock_get_pixmap.assert_not_called()
+        self.mock_page.get_pixmap.assert_not_called()
         # __getitem__ should not be called if len check fails first
         self.mock_doc.__getitem__.assert_not_called()
         # __len__ should be called

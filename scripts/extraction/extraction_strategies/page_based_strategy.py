@@ -51,27 +51,29 @@ class PageBasedExtractionStrategy(BaseExtractionStrategy):
         try:
             # Ensure document is valid
             if pdf_document is None:
+                 # This case should ideally be caught before calling, but defensive check.
+                 # Raising ValueError here to be caught by the general exception handler.
                  raise ValueError("PDF document object is None.")
 
             # Check page range defensively and get the page object.
-            # Use a try-except block for accessing document length and page,
-            # as these can fail on corrupted documents.
             try:
                  doc_length = len(pdf_document) # This call might fail
-                 # Using >= and < handles 0-indexed correctly relative to doc_length
-                 if page_idx < 0 or page_idx >= doc_length:
-                      raise IndexError(f"Page index {page_idx} requested (corresponds to page {page_num}), but document only has {doc_length} pages (0-{max(0, doc_length-1)}).")
+                 if not (0 <= page_idx < doc_length):
+                      # Use max(0, doc_length - 1) for the upper bound of the 0-indexed range string
+                      # to handle doc_length = 0 correctly (range becomes 0-0).
+                      error_msg = (f"Page index {page_idx} requested (corresponds to page {page_num}), "
+                                   f"but document only has {doc_length} pages (0-{max(0, doc_length - 1)}).")
+                      raise IndexError(error_msg)
                  page = pdf_document[page_idx] # This call might also fail
                  if page is None: # Defensive check if getitem returns None
-                      raise ValueError(f"PDF document returned None for page index {page_idx}")
+                      raise ValueError(f"PDF document returned None for page index {page_idx}.")
                  logger.debug(f"Successfully accessed page {page_num} (index {page_idx}) for rendering.")
 
-            except Exception as page_access_error:
-                 # Catch errors related to accessing document length or page object
+            except (IndexError, ValueError, RuntimeError, Exception) as page_access_error: # Catch broader exceptions for doc access
                  error = f"Page-based extraction failed for page {page_num} during page access: {str(page_access_error)}"
                  logger.debug(error)
                  extraction_info['success'] = False
-                 extraction_info['error'] = error
+                 extraction_info['error'] = str(page_access_error) # Use the specific error from IndexError/ValueError
                  # MODIFIED: Standardize issue_type to 'extraction_failed' as per solution
                  extraction_info['issue_type'] = "extraction_failed"
                  return None, extraction_info
@@ -85,18 +87,24 @@ class PageBasedExtractionStrategy(BaseExtractionStrategy):
                  current_dpi = 150
 
             zoom_factor = current_dpi / 72.0
+            matrix = fitz.Matrix(zoom_factor, zoom_factor)
+
             # Use a try-except block around Pixmap rendering
             try:
-                matrix = fitz.Matrix(zoom_factor, zoom_factor)
                 # This call might fail (e.g., invalid PDF data on page)
                 pix = page.get_pixmap(matrix=matrix)
-                logger.debug(f"Successfully rendered page {page_num} to pixmap ({pix.width}x{pix.height}, mode={'RGBA' if pix.alpha > 0 else 'RGB'}).")
+                # Safely determine pixmap mode for logging
+                pix_alpha_val = getattr(pix, 'alpha', 0) # Default to 0 if alpha attribute doesn't exist or is not int
+                if not isinstance(pix_alpha_val, int): # Handle if alpha is not an int (e.g. MagicMock)
+                    pix_alpha_val = 0 # Fallback for non-integer alpha
+                pix_mode_str = 'RGBA' if pix_alpha_val > 0 else 'RGB'
+                logger.debug(f"Successfully rendered page {page_num} to pixmap ({getattr(pix, 'width', 0)}x{getattr(pix, 'height', 0)}, mode={pix_mode_str}).")
+
 
             except Exception as rendering_error:
-                 # Specific error type for rendering failures
                  error = f"Page-based extraction failed for page {page_num} during pixmap rendering: {str(rendering_error)}"
                  logger.debug(error)
-                 extracted_image = None # Ensure None on this failure path
+                 # extracted_image is already None
                  extraction_info['success'] = False
                  extraction_info['error'] = error
                  extraction_info['issue_type'] = "rendering_failed"
@@ -105,74 +113,70 @@ class PageBasedExtractionStrategy(BaseExtractionStrategy):
 
 
             # Convert to PIL Image
-            # Assuming get_pixmap typically returns RGB or RGBA for page rendering.
-            # Check pix.alpha to determine mode.
             try:
-                mode = "RGBA" if pix.alpha > 0 else "RGB"
+                # Assuming get_pixmap typically returns RGB or RGBA for page rendering.
+                # Check pix.alpha to determine mode. pix.alpha should be int (0 or 1).
+                # Safely get alpha value
+                pix_alpha_val = getattr(pix, 'alpha', 0)
+                if not isinstance(pix_alpha_val, int): # Handle if alpha is not an int (e.g. MagicMock)
+                    pix_alpha_val = 0 # Fallback for non-integer alpha
+                mode = "RGBA" if pix_alpha_val > 0 else "RGB"
                 pil_image = Image.frombytes(mode, [pix.width, pix.height], pix.samples)
                 logger.debug(f"Successfully converted page {page_num} pixmap to PIL image.")
             except Exception as pil_conv_error:
                  error = f"Page-based extraction failed for page {page_num} during PIL conversion: {str(pil_conv_error)}"
                  logger.debug(error)
-                 extracted_image = None # Ensure None on this failure path
+                 # extracted_image is already None
                  extraction_info['success'] = False
                  extraction_info['error'] = error
                  extraction_info['issue_type'] = "extraction_failed" # Keep generic extraction_failed for PIL conversion errors
-                 # Ensure pixmap is closed if PIL conversion fails *after* pix is created
-                 if pix is not None and hasattr(pix, 'close'):
-                     try: pix.close()
-                     except Exception: pass
-                 pix = None # Ensure reference is cleared
+                 # pil_image is None here, pix might exist
+                 # Pixmap is closed in the finally block of this try-catch-finally for PIL conversion
                  return None, extraction_info # Return immediately on PIL conversion failure
-
-
-            # Free the pixmap memory immediately after its samples are used by PIL
-            # Use hasattr and try/except for robustness with mocks/unexpected objects
-            if pix is not None and hasattr(pix, 'close'):
-                 try: pix.close()
-                 except Exception: pass
-            pix = None # Set to None *after* closing
-
-
-            # Note: We don't check minimum size here, as the result is the entire page.
-            # The downstream validation/processing should handle filtering if needed.
-            # Adding a warning is good practice as this strategy returns the whole page.
-            # Only add the warning if the extraction was successful.
-            # Warning is added after success check below.
+            finally:
+                # Free the pixmap memory immediately after its samples are used by PIL or if conversion fails
+                # Use hasattr and try/except for robustness with mocks/unexpected objects
+                if pix is not None and hasattr(pix, 'close'):
+                     try: pix.close()
+                     except Exception: pass # Ignore errors during close
+                pix = None # Set to None *after* closing, regardless of success/failure of close
 
 
             # If all steps pass, set extracted_image and success
-            # pil_image must be created by now if no exception occurred
             if pil_image is None:
-                 # This should not happen if previous steps succeeded, but defensive check
-                 raise RuntimeError("PIL Image not created after pixmap rendering or conversion.")
+                 # This should not happen if previous steps succeeded and no exception was raised,
+                 # but defensive check. This would be caught by the general exception handler.
+                 raise RuntimeError("PIL Image not created after pixmap rendering and conversion, but no specific error was caught.")
 
-            extracted_image = pil_image
+            extracted_image = pil_image # pil_image is now the image to be returned
+            pil_image = None # Clear local variable to avoid accidental close in general except if it's the returned image
+
             extraction_info['success'] = True
             extraction_info['dimensions'] = f"{extracted_image.width}x{extracted_image.height}"
             extraction_info['mode'] = extracted_image.mode
-            extraction_info['warning'] = "Used whole page rendering as fallback; image contains entire page." # Add warning on success
+            # Adding a warning is good practice as this strategy returns the whole page.
+            extraction_info['warning'] = "Used whole page rendering as fallback; image contains entire page."
             logger.debug(f"Page-based extraction successful for page {page_num}")
 
 
         except Exception as e:
             # Catch any other unexpected exceptions that weren't specifically handled above
+            # This includes the ValueError for pdf_document is None, or RuntimeError from success path.
             error = f"Page-based extraction failed for page {page_num} with unexpected error: {str(e)}"
-            logger.debug(error)
+            logger.error(error, exc_info=True) # Log with stack trace for unexpected errors
             extracted_image = None # Ensure extracted_image is None on failure
             extraction_info['success'] = False # Explicitly set success to False on exception
             extraction_info['error'] = error
             extraction_info['issue_type'] = "extraction_failed" # Generic type for unhandled errors
-            # Ensure pil_image (if partially created before this catch) is closed
-            if pil_image is not None and isinstance(pil_image, Image.Image) and hasattr(pil_image, 'close') and pil_image != extracted_image:
+            # Ensure pil_image (if partially created before this catch and not assigned to extracted_image) is closed
+            if pil_image is not None and hasattr(pil_image, 'close'): # pil_image here is the local var, not the one to be returned
                  try: pil_image.close()
                  except Exception: pass
 
 
         finally:
              # Safety net: Ensure any pixmaps that might not have been closed earlier are closed.
-             # This should ideally not be necessary if the try block logic is correct.
-             # Handles real Pixmaps and mocks.
+             # This should ideally not be necessary if the try/except/finally logic for pix is correct.
              if pix is not None and hasattr(pix, 'close'):
                  try:
                      pix.close()
