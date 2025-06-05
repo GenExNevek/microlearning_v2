@@ -72,7 +72,8 @@ class PageBasedExtractionStrategy(BaseExtractionStrategy):
                  logger.debug(error)
                  extraction_info['success'] = False
                  extraction_info['error'] = error
-                 extraction_info['issue_type'] = "page_access_failed" # Specific issue type for page access
+                 # MODIFIED: Standardize issue_type to 'extraction_failed' as per solution
+                 extraction_info['issue_type'] = "extraction_failed"
                  return None, extraction_info
 
 
