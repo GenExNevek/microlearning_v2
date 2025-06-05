@@ -13,7 +13,7 @@ from typing import Dict
 
 
 # Import the ImageProcessor and its dependency
-from ..image_processor import ImageProcessor
+from scripts.extraction.image_processor import ImageProcessor
 from ...utils.image_validation import ImageValidator, ImageIssueType # Adjust import as necessary
 
 # Mock configuration

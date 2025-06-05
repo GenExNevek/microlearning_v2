@@ -9,6 +9,13 @@ from typing import Dict, Any
 # Import the RetryCoordinator
 from ..retry_coordinator import RetryCoordinator
 
+# Import real strategy classes before patching overrides them
+from .mock_strategies import (
+    MockStrategyA as RealMockStrategyA,
+    MockStrategyB as RealMockStrategyB,
+    MockStrategyC as RealMockStrategyC,
+)
+
 # Mock configuration
 MOCK_CONFIG = {
     "retry_failed_extractions": True,
@@ -70,16 +77,16 @@ class TestRetryCoordinator(unittest.TestCase):
     @patch(f'{PATCH_PATH_PREFIX}MockStrategyA')
     def test_first_strategy_succeeds(self, PatchedMockStrategyA, PatchedMockStrategyB, PatchedMockStrategyC):
         """Test that coordinator stops after the first successful strategy."""
-        mock_instance_a = MagicMock(spec=MockStrategyA)
+        mock_instance_a = MagicMock(spec=RealMockStrategyA)
         mock_instance_a.extract.return_value = (
             MagicMock(), 
             {'success': True, 'details': {'dimensions': '100x100', 'mode': 'RGB'}}
         )
         PatchedMockStrategyA.return_value = mock_instance_a
 
-        mock_instance_b = MagicMock(spec=MockStrategyB) # This instance will be created
+        mock_instance_b = MagicMock(spec=RealMockStrategyB) # This instance will be created
         PatchedMockStrategyB.return_value = mock_instance_b
-        mock_instance_c = MagicMock(spec=MockStrategyC) # This instance will be created
+        mock_instance_c = MagicMock(spec=RealMockStrategyC) # This instance will be created
         PatchedMockStrategyC.return_value = mock_instance_c
 
         strategies_for_coordinator = [
@@ -120,18 +127,18 @@ class TestRetryCoordinator(unittest.TestCase):
     @patch(f'{PATCH_PATH_PREFIX}MockStrategyA')
     def test_second_strategy_succeeds_after_first_fails(self, PatchedMockStrategyA, PatchedMockStrategyB, PatchedMockStrategyC):
         """Test that coordinator moves to the next strategy if the first fails."""
-        mock_instance_a = MagicMock(spec=MockStrategyA)
+        mock_instance_a = MagicMock(spec=RealMockStrategyA)
         mock_instance_a.extract.return_value = (None, {'success': False, 'error': 'A failed', 'details': {}})
         PatchedMockStrategyA.return_value = mock_instance_a
 
-        mock_instance_b = MagicMock(spec=MockStrategyB)
+        mock_instance_b = MagicMock(spec=RealMockStrategyB)
         mock_instance_b.extract.return_value = (
             MagicMock(), 
             {'success': True, 'details': {'dimensions': '200x200', 'mode': 'L'}}
         )
         PatchedMockStrategyB.return_value = mock_instance_b
 
-        mock_instance_c = MagicMock(spec=MockStrategyC) # This instance will be created
+        mock_instance_c = MagicMock(spec=RealMockStrategyC) # This instance will be created
         PatchedMockStrategyC.return_value = mock_instance_c
 
         strategies_for_coordinator = [
@@ -176,15 +183,15 @@ class TestRetryCoordinator(unittest.TestCase):
     @patch(f'{PATCH_PATH_PREFIX}MockStrategyA')
     def test_all_strategies_fail(self, PatchedMockStrategyA, PatchedMockStrategyB, PatchedMockStrategyC):
         """Test that coordinator returns None if all strategies fail."""
-        mock_instance_a = MagicMock(spec=MockStrategyA)
+        mock_instance_a = MagicMock(spec=RealMockStrategyA)
         mock_instance_a.extract.return_value = (None, {'success': False, 'error': 'A failed', 'details': {}})
         PatchedMockStrategyA.return_value = mock_instance_a
 
-        mock_instance_b = MagicMock(spec=MockStrategyB)
+        mock_instance_b = MagicMock(spec=RealMockStrategyB)
         mock_instance_b.extract.return_value = (None, {'success': False, 'error': 'B failed', 'issue_type': 'size_issues', 'details': {}})
         PatchedMockStrategyB.return_value = mock_instance_b
 
-        mock_instance_c = MagicMock(spec=MockStrategyC)
+        mock_instance_c = MagicMock(spec=RealMockStrategyC)
         mock_instance_c.extract.return_value = (None, {'success': False, 'error': 'C failed', 'issue_type': 'extraction_failed', 'details': {}})
         PatchedMockStrategyC.return_value = mock_instance_c
 
@@ -232,17 +239,17 @@ class TestRetryCoordinator(unittest.TestCase):
         config_no_retry = MOCK_CONFIG.copy()
         config_no_retry['retry_failed_extractions'] = False # Key change for this test
 
-        mock_instance_a = MagicMock(spec=MockStrategyA)
+        mock_instance_a = MagicMock(spec=RealMockStrategyA)
         
         the_extract_mock = MagicMock(return_value=(None, {'success': False, 'error': 'A failed', 'details': {}}))
         mock_instance_a.extract = the_extract_mock
         
         PatchedMockStrategyA.return_value = mock_instance_a
 
-        mock_instance_b = MagicMock(spec=MockStrategyB) # This instance will be created
+        mock_instance_b = MagicMock(spec=RealMockStrategyB) # This instance will be created
         PatchedMockStrategyB.return_value = mock_instance_b
         
-        mock_instance_c = MagicMock(spec=MockStrategyC) # This instance will be created
+        mock_instance_c = MagicMock(spec=RealMockStrategyC) # This instance will be created
         PatchedMockStrategyC.return_value = mock_instance_c
         
         strategies_for_coordinator = [
@@ -286,14 +293,14 @@ class TestRetryCoordinator(unittest.TestCase):
         """Test that initial_extraction_info is included in the final result."""
         initial_info = {'global_image_counter': 5, 'custom_key': 'test'}
 
-        mock_instance_a = MagicMock(spec=MockStrategyA)
+        mock_instance_a = MagicMock(spec=RealMockStrategyA)
         mock_instance_a.extract.return_value = (
             MagicMock(), 
             {'success': True, 'details': {'dimensions': '100x100', 'mode': 'RGB'}}
         )
         PatchedMockStrategyA.return_value = mock_instance_a
 
-        mock_instance_b = MagicMock(spec=MockStrategyB) # This instance will be created
+        mock_instance_b = MagicMock(spec=RealMockStrategyB) # This instance will be created
         PatchedMockStrategyB.return_value = mock_instance_b
 
         strategies_for_coordinator = [
