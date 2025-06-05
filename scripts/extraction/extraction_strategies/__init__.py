@@ -2,7 +2,7 @@
 
 """Extraction strategies package."""
 
-from .base_strategy import BaseExtractionStrategy
+from .base_strategy import BaseExtractionStrategy, StrategyTuple
 from .standard_strategy import StandardExtractionStrategy
 from .alternate_colorspace_strategy import AlternateColorspaceExtractionStrategy
 from .compression_retry_strategy import CompressionRetryStrategy
@@ -14,4 +14,5 @@ __all__ = [
     "AlternateColorspaceExtractionStrategy",
     "CompressionRetryStrategy",
     "PageBasedExtractionStrategy",
+    "StrategyTuple",
 ]
