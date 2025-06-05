@@ -153,20 +153,22 @@ class ImageProcessor:
 
         # Determine format to save
         save_format = self.image_format.upper()
+        if save_format == "JPG": # Canonicalize to JPEG for Pillow
+            save_format = "JPEG"
         processing_details['save_format'] = save_format
 
         # Save with appropriate quality/compression
         save_kwargs = {}
-        if save_format in ['JPG', 'JPEG']:
+        if save_format == 'JPEG': # Use canonical name
             save_kwargs['quality'] = self.quality
             save_kwargs['optimize'] = True
             processing_details['jpeg_quality'] = self.quality
         elif save_format == 'PNG':
-            save_kwargs['compress_level'] = 9
+            save_kwargs['compress_level'] = 9 # Default is 6, 9 is max compression
             processing_details['png_compress_level'] = 9
 
         # Ensure image is in a mode compatible with the target format if necessary
-        if save_format in ['JPG', 'JPEG'] and image.mode == 'RGBA':
+        if save_format == 'JPEG' and image.mode == 'RGBA': # Use canonical name
              logger.debug("Converting RGBA to RGB for JPEG save.")
              image = image.convert('RGB')
              processing_details['mode_converted'] = 'RGBA_to_RGB'
