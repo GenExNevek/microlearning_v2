@@ -39,8 +39,7 @@ class MockSettings:
         "report_path": "extraction_reports"
     }
 
-# Mock dependent components (MockImageValidator, MockImageProcessor, MockRetryCoordinator, MockExtractionReporter)
-# These mock class definitions remain unchanged from your provided file.
+# Mock dependent components
 class MockImageValidator:
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         self.is_valid = True
@@ -76,15 +75,16 @@ class MockImageProcessor:
         process_result['path'] = output_path
 
         if self.process_and_save_result_template.get('success', True):
-            try:
-                os.makedirs(os.path.dirname(output_path), exist_ok=True)
-                with open(output_path, 'w') as f:
-                    f.write("dummy image content")
-                process_result['processing_details']['saved'] = True
-            except Exception as e:
-                process_result = {'success': False, 'path': output_path, 'issue': f"Mock save failed: {e}", 'issue_type': "mock_save_error", 'validation_info': {}, 'processing_details': {}}
-        else: 
-            process_result['success'] = False
+            # Simulate successful save without actual directory/file creation.
+            # The mock's job is to report success, not to do real I/O.
+            process_result['processing_details']['saved'] = True
+        # No explicit 'else' needed if template already has success=False for failure cases.
+        # However, if the template is always success=True, and we want to simulate failure:
+        # else:
+        #     process_result['success'] = False
+        #     process_result['issue'] = "Simulated processing failure"
+        #     process_result['issue_type'] = "simulated_error"
+        #     process_result['processing_details']['saved'] = False
         return process_result
 
 class MockRetryCoordinator:
@@ -227,7 +227,6 @@ class MockExtractionReporter:
         return final_summary
 
 
-# Class-level patches are removed from here.
 class TestImageExtractorRefactored(unittest.TestCase):
 
     @classmethod
@@ -246,17 +245,16 @@ class TestImageExtractorRefactored(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls) -> None:
-        shutil.rmtree(cls.temp_dir)
+        shutil.rmtree(cls.temp_dir) # MockImageProcessor no longer creates files, so simple rmtree is fine.
+
 
     def setUp(self) -> None:
-        # Initialize mock instances that will be configured by method-level patches.
         self.mock_settings_config = MockSettings.IMAGE_EXTRACTION_CONFIG
 
         self.mock_reporter = MockExtractionReporter(self.mock_settings_config)
         self.mock_processor = MockImageProcessor(self.mock_settings_config)
         self.mock_coordinator = MockRetryCoordinator([], self.mock_settings_config)
         
-        # Reset states of these mock instances for each test
         self.mock_reporter.start_doc_calls.clear()
         self.mock_reporter.track_attempt_calls.clear()
         self.mock_reporter.track_result_calls.clear()
@@ -271,7 +269,7 @@ class TestImageExtractorRefactored(unittest.TestCase):
         self.mock_processor.process_and_save_result_template = {
             'success': True, 'path': '', 'issue': None, 'issue_type': None,
             'validation_info': {'size': '100x100', 'format': self.mock_processor.image_format, 'is_valid': True},
-            'processing_details': {}
+            'processing_details': {'saved': True} # Ensure 'saved' is True for default success
         }
 
         self.mock_coordinator._call_count = 0
@@ -284,13 +282,11 @@ class TestImageExtractorRefactored(unittest.TestCase):
             {'success': True, 'attempt_count': 1, 'attempts': [{'strategy': 'standard', 'success': True, 'details': {'dimensions': '100x100', 'mode': 'RGB'}}], 'duration': 0.01, 'page': 1, 'index_on_page': 0, 'xref': 10, 'final_error': None}
         )
 
-    # Patches are now applied at the method level.
-    # Order of decorators: bottom-up for arguments.
     @patch('scripts.extraction.image_extractor.settings', new=MockSettings)
     @patch('scripts.extraction.image_extractor.ExtractionReporter')
     @patch('scripts.extraction.image_extractor.ImageProcessor')
     @patch('scripts.extraction.image_extractor.RetryCoordinator')
-    @patch('scripts.extraction.image_processor.ImageValidator', new=MockImageValidator) # Patched where ImageProcessor would look it up
+    @patch('scripts.extraction.image_processor.ImageValidator', new=MockImageValidator) 
     @patch('scripts.extraction.image_extractor.fitz.open')
     @patch('scripts.extraction.image_extractor.os.makedirs')
     def test_extraction_pipeline_success(self, 
@@ -299,23 +295,19 @@ class TestImageExtractorRefactored(unittest.TestCase):
                                          MockRetryCoordinatorClass: MagicMock,
                                          MockImageProcessorClass: MagicMock,
                                          MockExtractionReporterClass: MagicMock) -> None:
-        # Configure patched classes to return our prepared mock instances
         MockExtractionReporterClass.return_value = self.mock_reporter
         MockImageProcessorClass.return_value = self.mock_processor
         MockRetryCoordinatorClass.return_value = self.mock_coordinator
 
-        # Import ImageExtractor HERE, after patches are active
         from scripts.extraction.image_extractor import ImageExtractor 
         
         extractor = ImageExtractor()
         
-        # Verify that the extractor is using our mock instances
         self.assertIs(extractor.reporter, self.mock_reporter)
         self.assertIs(extractor.image_processor, self.mock_processor)
         self.assertIs(extractor.retry_coordinator, self.mock_coordinator)
         self.assertEqual(extractor.config, MockSettings.IMAGE_EXTRACTION_CONFIG)
 
-        # Test logic (largely unchanged, uses self.mock_... instances)
         mock_doc = MagicMock()
         mock_doc.__len__.return_value = 1
         mock_page = MagicMock()
@@ -335,11 +327,16 @@ class TestImageExtractorRefactored(unittest.TestCase):
             (img2_mock, {'success': True, 'page': 1, 'index_on_page': 1, 'xref': 20})
         ])
 
+        # Ensure the mock processor's template indicates success for this test
+        self.mock_processor.process_and_save_result_template['success'] = True
+        self.mock_processor.process_and_save_result_template['processing_details']['saved'] = True
+
+
         output_dir = os.path.join(self.temp_dir, "output_success")
         results = extractor.extract_images_from_pdf(self.dummy_pdf_path, output_dir)
 
         self.assertEqual(self.mock_reporter.start_doc_calls, [self.dummy_pdf_path])
-        mock_makedirs.assert_called_once_with(output_dir, exist_ok=True)
+        mock_makedirs.assert_called_once_with(output_dir, exist_ok=True) 
         mock_fitz_open.assert_called_once_with(self.dummy_pdf_path)
         mock_doc.__getitem__.assert_called_once_with(0)
         mock_page.get_images.assert_called_once_with(full=True)
@@ -351,8 +348,11 @@ class TestImageExtractorRefactored(unittest.TestCase):
         self.assertEqual(self.mock_coordinator.coordinate_extraction_calls[1][1], mock_img_list[1])
 
         self.assertEqual(len(self.mock_processor.process_and_save_calls), 2)
+        # We no longer check for os.path.exists as the mock doesn't create real files.
+        # We check that the mock_processor was called with the correct paths.
         self.assertEqual(self.mock_processor.process_and_save_calls[0][1], os.path.join(output_dir, f'fig1-page1-img1.{self.mock_processor.image_format}'))
         self.assertEqual(self.mock_processor.process_and_save_calls[1][1], os.path.join(output_dir, f'fig2-page1-img2.{self.mock_processor.image_format}'))
+
 
         self.assertEqual(len(self.mock_reporter.track_result_calls), 2)
         self.assertEqual(self.mock_reporter.finalize_calls, [output_dir])
@@ -406,17 +406,24 @@ class TestImageExtractorRefactored(unittest.TestCase):
             (img3_mock_coord_success, {'success': True, 'page': 1, 'index_on_page': 2, 'xref': 30})
         ])
         
+        # This side effect for mock_processor.process_and_save_image should only return dictionaries.
+        # It should NOT perform any os.makedirs or file open operations.
         def process_side_effect(image: MagicMock, output_path: str) -> Dict[str, Any]:
             if 'fig1' in output_path: 
                 return {'success': True, 'path': output_path, 'issue': None, 'validation_info': {'is_valid': True}, 'processing_details': {'saved': True}}
             elif 'fig3' in output_path: 
-                return {'success': False, 'path': output_path, 'issue': 'Proc Fail', 'issue_type': 'size_issues', 'validation_info': {'is_valid': False}, 'processing_details': {}}
-            return {'success': False, 'path': output_path, 'issue': 'Unexpected image call in mock_processor', 'issue_type': 'test_setup_error'}
+                return {'success': False, 'path': output_path, 'issue': 'Proc Fail', 'issue_type': 'size_issues', 'validation_info': {'is_valid': False}, 'processing_details': {'saved': False}}
+            # This case should ideally not be hit if the test is set up correctly.
+            return {'success': False, 'path': output_path, 'issue': 'Unexpected image call in mock_processor side_effect', 'issue_type': 'test_setup_error', 'processing_details': {'saved': False}}
+        
         self.mock_processor.process_and_save_image = MagicMock(side_effect=process_side_effect)
+
 
         output_dir = os.path.join(self.temp_dir, "output_failures")
         results = extractor.extract_images_from_pdf(self.dummy_pdf_path, output_dir)
 
+        mock_makedirs.assert_called_once_with(output_dir, exist_ok=True) 
+        
         self.assertEqual(self.mock_coordinator._call_count, 3)
         self.assertEqual(self.mock_processor.process_and_save_image.call_count, 2) 
 
@@ -457,7 +464,6 @@ class TestImageExtractorRefactored(unittest.TestCase):
         extractor = ImageExtractor()
 
         self.assertIs(extractor.reporter, self.mock_reporter)
-        # Add other self.assertIs checks if desired
 
         mock_fitz_open.side_effect = fitz.FileNotFoundError("Mock PDF not found")
 
@@ -488,10 +494,10 @@ class TestImageExtractorRefactored(unittest.TestCase):
     @patch('scripts.extraction.image_extractor.RetryCoordinator')
     @patch('scripts.extraction.image_processor.ImageValidator', new=MockImageValidator)
     @patch('scripts.extraction.image_extractor.fitz.open')
-    @patch('scripts.extraction.image_extractor.os.makedirs') # This is mock_makedirs
+    @patch('scripts.extraction.image_extractor.os.makedirs') 
     def test_makedirs_error_handling(self, 
-                                     mock_makedirs: MagicMock, # Corresponds to os.makedirs
-                                     mock_fitz_open: MagicMock, # Corresponds to fitz.open
+                                     mock_makedirs: MagicMock, 
+                                     mock_fitz_open: MagicMock, 
                                      MockRetryCoordinatorClass: MagicMock,
                                      MockImageProcessorClass: MagicMock,
                                      MockExtractionReporterClass: MagicMock) -> None:
@@ -499,14 +505,12 @@ class TestImageExtractorRefactored(unittest.TestCase):
         MockImageProcessorClass.return_value = self.mock_processor
         MockRetryCoordinatorClass.return_value = self.mock_coordinator
         
-        # Configure the mock_makedirs argument passed to the test method
         mock_makedirs.side_effect = OSError("Mock mkdir failed")
 
         from scripts.extraction.image_extractor import ImageExtractor
         extractor = ImageExtractor()
 
         self.assertIs(extractor.reporter, self.mock_reporter)
-        # Add other self.assertIs checks if desired
 
         output_dir = os.path.join(self.temp_dir, "uncreatable_output_dir") 
         results = extractor.extract_images_from_pdf(self.dummy_pdf_path, output_dir)
