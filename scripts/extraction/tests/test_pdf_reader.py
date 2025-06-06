@@ -4,7 +4,7 @@ import os
 import sys
 import argparse
 from scripts.extraction.pdf_reader import PDFReader
-from config import settings
+from scripts.config import settings
 
 def test_pdf_reading(pdf_path=None):
     """Test PDF reading with Gemini API."""
