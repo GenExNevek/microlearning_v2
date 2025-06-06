@@ -4,21 +4,15 @@ import pytest
 from unittest.mock import patch, MagicMock
 import os
 
-# from scripts.extraction.markdown_processing.image_link_processor import ImageLinkProcessor
-# from scripts.config import settings # For IMAGE_ASSETS_SUFFIX
-# from scripts.utils.image_validation import ImageIssueType
-
 # To import settings and ImageIssueType correctly if tests are run from project root:
 from scripts.config import settings
 from scripts.utils.image_validation import ImageIssueType
 
 
 class TestImageLinkProcessor:
-    # TODO: Port relevant tests from the original test_markdown_formatter.py
-    # for _process_image_references.
-
     @pytest.fixture
     def processor(self):
+        # Import the class to be tested
         from scripts.extraction.markdown_processing.image_link_processor import ImageLinkProcessor
         return ImageLinkProcessor()
 
@@ -37,16 +31,15 @@ class TestImageLinkProcessor:
         unit_title_id = "test_unit_id"
         image_extraction_results = {
             'problematic_images': [],
-            # other fields like 'extracted_count' can be added if processor uses them
         }
         
-        # Patch os.listdir and os.path.exists for this test
         with patch('scripts.extraction.markdown_processing.image_link_processor.os.listdir') as mock_listdir, \
              patch('scripts.extraction.markdown_processing.image_link_processor.os.path.exists') as mock_exists:
             
-            mock_exists.return_value = True # Assume assets dir exists
+            mock_exists.return_value = True 
             mock_listdir.return_value = ["fig1-page1-img1.png", "fig2-page1-img2.png"]
 
+            # Call the method from the implementation file (image_link_processor.py)
             processed_content = processor.process_image_links(
                 content, unit_title_id, image_extraction_results, mock_assets_dir
             )
@@ -61,19 +54,18 @@ class TestImageLinkProcessor:
         unit_title_id = "problem_unit"
         image_extraction_results = {
             'problematic_images': [{
-                'page': 1, 'index_on_page': 0, # Corresponds to page 1, image 1 (1-indexed)
+                'page': 1, 'index_on_page': 0, 
                 'issue': 'Image is blank', 'issue_type': ImageIssueType.BLANK.value
             }],
             'extracted_count': 0, 'failed_count': 1
         }
-        # LLM refers to "page 1, image 1"
         content = "![A blank image from page 1, image 1](p1_img1.png)"
 
         with patch('scripts.extraction.markdown_processing.image_link_processor.os.listdir') as mock_listdir, \
              patch('scripts.extraction.markdown_processing.image_link_processor.os.path.exists') as mock_exists:
             
             mock_exists.return_value = True
-            mock_listdir.return_value = [] # No successfully saved images on disk
+            mock_listdir.return_value = [] 
 
             processed_content = processor.process_image_links(
                 content, unit_title_id, image_extraction_results, mock_assets_dir
@@ -97,15 +89,14 @@ class TestImageLinkProcessor:
         with patch('scripts.extraction.markdown_processing.image_link_processor.os.listdir') as mock_listdir, \
              patch('scripts.extraction.markdown_processing.image_link_processor.os.path.exists') as mock_exists:
             mock_exists.return_value = True
-            mock_listdir.return_value = ["actual-disk-page2-img3.png"] # Only one image on disk
+            mock_listdir.return_value = ["actual-disk-page2-img3.png"]
 
             processed_content = processor.process_image_links(
                 content, unit_title_id, image_extraction_results, mock_assets_dir
             )
         
         expected_img_path = f"./{unit_title_id}{settings.IMAGE_ASSETS_SUFFIX}/actual-disk-page2-img3.png"
-        # Both MD references should point to the same disk image because they both parse to Page 2, Image 3
-        assert processed_content.count(expected_img_path) == 2
+        assert processed_content.count(expected_img_path) == 2 # Both MD refs should point to the same disk image
         assert f"![Figure on page 2 image 3]({expected_img_path})" in processed_content
         assert f"![Another one]({expected_img_path})" in processed_content
 
@@ -113,11 +104,10 @@ class TestImageLinkProcessor:
     def test_process_image_links_no_assets_dir_uses_generic_placeholder(self, processor):
         content = "![Local image](local.png)"
         unit_title_id = "no_assets_dir_test"
-        image_extraction_results = {'problematic_images': []} # Assume extraction was attempted
+        image_extraction_results = {'problematic_images': []} 
         
-        # actual_disk_img_assets_path will be None or non-existent
         processed_content = processor.process_image_links(
-            content, unit_title_id, image_extraction_results, None # Pass None for assets path
+            content, unit_title_id, image_extraction_results, None 
         )
         
         expected_path_base = f"./{unit_title_id}{settings.IMAGE_ASSETS_SUFFIX}"
@@ -158,14 +148,14 @@ class TestImageLinkProcessor:
         with patch('scripts.extraction.markdown_processing.image_link_processor.os.listdir') as mock_listdir, \
              patch('scripts.extraction.markdown_processing.image_link_processor.os.path.exists') as mock_exists:
             mock_exists.return_value = True
-            mock_listdir.return_value = ["some-disk-image.png"] # One local image available
+            mock_listdir.return_value = ["some-disk-image.png"] 
 
             processed_content = processor.process_image_links(
                 content, unit_title_id, image_extraction_results, mock_assets_dir
             )
         
         expected_local_path = f"./{unit_title_id}{settings.IMAGE_ASSETS_SUFFIX}/some-disk-image.png"
-        assert f"![Local image]({expected_local_path})" in processed_content
+        assert f"![Local image]({expected_local_path})" in processed_content # This was the failing assertion
         assert "![External image](http://example.com/image.png)" in processed_content
         assert "![Absolute path image](/images/abs.png)" in processed_content
         assert "![Data URI image](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUA)" in processed_content
