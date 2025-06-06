@@ -124,6 +124,8 @@ class ImageLinkProcessor:
             saved_image_files = []
         
         available_images_on_disk = saved_image_files[:]
+        logger.info(f"DEBUG_INIT: available_images_on_disk initialized to: {available_images_on_disk}") # NEW DEBUG LINE
+        
         problematic_images_info: Dict[str, Dict[str, Any]] = {
             # Key is 1-indexed for page and index_on_page
             f"{p.get('page')}-{p.get('index_on_page', -1) + 1}": p
@@ -186,16 +188,27 @@ class ImageLinkProcessor:
             if target_saved_image_filename:
                 replacement_image_tag = f"![{alt_text}]({md_img_assets_path}/{target_saved_image_filename})"
             else:
-                # 3. Fallback: Sequential mapping for MD refs that didn't get a specific match
-                #    or for those that didn't parse to a page/index.
+                # Fallback to sequential assignment
+                logger.info(f"DEBUG: ENTERING SEQUENTIAL FOR alt='{alt_text}', path='{original_path_in_md}'") # DEBUG LINE
+                logger.info(f"DEBUG: available_images_on_disk = {available_images_on_disk}") # DEBUG LINE
+                logger.info(f"DEBUG: sequentially_assigned_disk_indices = {sequentially_assigned_disk_indices}") # DEBUG LINE
+
                 found_sequential = False
+                if not available_images_on_disk: # Explicit check
+                    logger.warning(f"DEBUG: available_images_on_disk is EMPTY for '{alt_text}'!")
+                
                 for i, disk_img_name in enumerate(available_images_on_disk):
+                    logger.info(f"DEBUG: Sequential loop iter: i={i}, name='{disk_img_name}'") # DEBUG LINE
                     if i not in sequentially_assigned_disk_indices:
-                        sequentially_assigned_disk_indices.add(i) # Mark as used for sequential assignment
+                        sequentially_assigned_disk_indices.add(i) 
                         replacement_image_tag = f"![{alt_text}]({md_img_assets_path}/{disk_img_name})"
                         logger.info(f"Sequentially mapping MD ref '{alt_text}' (path: {original_path_in_md}) to disk image: {disk_img_name}")
                         found_sequential = True
                         break
+                    else: # DEBUG LINE
+                        logger.info(f"DEBUG: Index {i} for '{disk_img_name}' IS in sequentially_assigned_disk_indices.")
+                
+                logger.info(f"DEBUG: After loop, found_sequential = {found_sequential} for '{alt_text}'") # DEBUG LINE
                 if not found_sequential:
                     logger.warning(f"No specific or sequential disk image for MD ref: alt='{alt_text}', path='{original_path_in_md}'. Using error placeholder.")
                     replacement_image_tag = f"![{alt_text} (Image Not Found)]({md_img_assets_path}/placeholder-error.png)"

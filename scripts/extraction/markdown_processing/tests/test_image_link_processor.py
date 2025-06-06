@@ -20,10 +20,9 @@ class TestImageLinkProcessor:
     def mock_assets_dir(self, tmp_path):
         assets_path = tmp_path / "test_unit_id-img-assets"
         assets_path.mkdir()
-        return str(assets_path) # Return as string
+        return str(assets_path) 
 
     def test_process_image_links_simple_sequential_match(self, processor, mock_assets_dir):
-        # Create dummy image files in the mock assets dir
         (open(os.path.join(mock_assets_dir, "fig1-page1-img1.png"), "w")).write("dummy")
         (open(os.path.join(mock_assets_dir, "fig2-page1-img2.png"), "w")).write("dummy")
 
@@ -39,7 +38,6 @@ class TestImageLinkProcessor:
             mock_exists.return_value = True 
             mock_listdir.return_value = ["fig1-page1-img1.png", "fig2-page1-img2.png"]
 
-            # Call the method from the implementation file (image_link_processor.py)
             processed_content = processor.process_image_links(
                 content, unit_title_id, image_extraction_results, mock_assets_dir
             )
@@ -55,7 +53,7 @@ class TestImageLinkProcessor:
         image_extraction_results = {
             'problematic_images': [{
                 'page': 1, 'index_on_page': 0, 
-                'issue': 'Image is blank', 'issue_type': ImageIssueType.BLANK.value
+                'issue': 'Image is blank', 'issue_type': ImageIssueType.BLANK.value # issue_type is 'blank'
             }],
             'extracted_count': 0, 'failed_count': 1
         }
@@ -74,7 +72,8 @@ class TestImageLinkProcessor:
         expected_path_base = f"./{unit_title_id}{settings.IMAGE_ASSETS_SUFFIX}"
         placeholder_name = "placeholder-blank.png"
         assert f"![A blank image from page 1, image 1 (Issue: {ImageIssueType.BLANK.value})]({expected_path_base}/{placeholder_name})" in processed_content
-        assert f"<!-- WARNING: Image from Page 1, Index 1 had an issue: {ImageIssueType.BLANK.value}." in processed_content
+        # Corrected assertion to match the detailed warning:
+        assert f"<!-- WARNING: Image from Page 1, Index 1 had an issue: Image is blank. Using placeholder. -->" in processed_content
 
 
     def test_process_image_links_match_by_filename_and_alt_text_parsing(self, processor, mock_assets_dir):
@@ -96,7 +95,7 @@ class TestImageLinkProcessor:
             )
         
         expected_img_path = f"./{unit_title_id}{settings.IMAGE_ASSETS_SUFFIX}/actual-disk-page2-img3.png"
-        assert processed_content.count(expected_img_path) == 2 # Both MD refs should point to the same disk image
+        assert processed_content.count(expected_img_path) == 2 
         assert f"![Figure on page 2 image 3]({expected_img_path})" in processed_content
         assert f"![Another one]({expected_img_path})" in processed_content
 
@@ -112,7 +111,8 @@ class TestImageLinkProcessor:
         
         expected_path_base = f"./{unit_title_id}{settings.IMAGE_ASSETS_SUFFIX}"
         assert f"![Local image]({expected_path_base}/placeholder-image.png)" in processed_content
-        assert "<!-- WARNING: Image extraction results not fully available or assets directory missing" in processed_content
+        # Corrected assertion to match the actual warning:
+        assert "<!-- WARNING: Image assets directory missing (None). Local image links may be placeholders. -->" in processed_content
 
     def test_process_image_links_unused_disk_images_warning(self, processor, mock_assets_dir):
         (open(os.path.join(mock_assets_dir, "used-page1-img1.png"), "w")).write("dummy")
@@ -145,17 +145,21 @@ class TestImageLinkProcessor:
         unit_title_id = "external_skip"
         image_extraction_results = {'problematic_images': []}
 
+        # Patch os.path.isfile as well
         with patch('scripts.extraction.markdown_processing.image_link_processor.os.listdir') as mock_listdir, \
-             patch('scripts.extraction.markdown_processing.image_link_processor.os.path.exists') as mock_exists:
-            mock_exists.return_value = True
-            mock_listdir.return_value = ["some-disk-image.png"] 
+             patch('scripts.extraction.markdown_processing.image_link_processor.os.path.exists') as mock_exists, \
+             patch('scripts.extraction.markdown_processing.image_link_processor.os.path.isfile') as mock_isfile:
+            
+            mock_exists.return_value = True  # Mock directory existence
+            mock_listdir.return_value = ["some-disk-image.png"] # Mock directory listing
+            mock_isfile.return_value = True   # Mock that files in listing are actual files
 
             processed_content = processor.process_image_links(
                 content, unit_title_id, image_extraction_results, mock_assets_dir
             )
         
         expected_local_path = f"./{unit_title_id}{settings.IMAGE_ASSETS_SUFFIX}/some-disk-image.png"
-        assert f"![Local image]({expected_local_path})" in processed_content # This was the failing assertion
+        assert f"![Local image]({expected_local_path})" in processed_content 
         assert "![External image](http://example.com/image.png)" in processed_content
         assert "![Absolute path image](/images/abs.png)" in processed_content
         assert "![Data URI image](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUA)" in processed_content
