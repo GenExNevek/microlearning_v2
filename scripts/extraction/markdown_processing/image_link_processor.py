@@ -30,13 +30,22 @@ class ImageLinkProcessor:
         """Helper to parse page and index from markdown alt text or path."""
         page_num, img_idx_on_page = None, None
 
-        # Attempt 1: Parse from filename in MD link (e.g., figX-pageY-imgZ.png)
-        fn_match = re.search(r'page(\d+)[-_]?img(\d+)', md_path, re.IGNORECASE)
+        # ***FIXED: Updated pattern to match actual filename format from image_extractor.py***
+        # Looking for: fig{N}-page{P}-img{I}.{ext} format
+        fn_match = re.search(r'fig\d+-page(\d+)-img(\d+)', md_path, re.IGNORECASE)
         if fn_match:
             page_num = int(fn_match.group(1))
-            img_idx_on_page = int(fn_match.group(2))
-            logger.debug(f"Parsed from MD path filename '{md_path}': page={page_num}, idx_on_page={img_idx_on_page}")
-            # Return early if both found from filename, as it's often more reliable
+            # ***FIXED: Index handling - converting to 0-indexed for internal consistency***
+            img_idx_on_page = int(fn_match.group(2)) - 1  # Convert to 0-indexed
+            logger.debug(f"Parsed from MD path filename '{md_path}': page={page_num}, idx_on_page={img_idx_on_page} (0-indexed)")
+            return page_num, img_idx_on_page
+
+        # ***ENHANCED: Also check for legacy pattern as fallback***
+        legacy_fn_match = re.search(r'page(\d+)[-_]?img(\d+)', md_path, re.IGNORECASE)
+        if legacy_fn_match:
+            page_num = int(legacy_fn_match.group(1))
+            img_idx_on_page = int(legacy_fn_match.group(2)) - 1  # Convert to 0-indexed
+            logger.debug(f"Parsed from MD path (legacy pattern) '{md_path}': page={page_num}, idx_on_page={img_idx_on_page} (0-indexed)")
             return page_num, img_idx_on_page
 
         # Attempt 2: Parse from alt text
@@ -55,11 +64,13 @@ class ImageLinkProcessor:
             if img_match_alt.group(1) and img_match_alt.group(2): # Format like "fig <page_val_from_alt>.<index_val_from_alt>"
                 # If page_num wasn't found from "page X" pattern, use the one from "fig P.I"
                 if page_num is None: page_num = int(img_match_alt.group(1))
-                img_idx_on_page = int(img_match_alt.group(2))
+                # ***FIXED: Convert to 0-indexed for consistency***
+                img_idx_on_page = int(img_match_alt.group(2)) - 1
             elif img_match_alt.group(3): # Format like "fig <index_val_from_alt>"
-                img_idx_on_page = int(img_match_alt.group(3))
+                # ***FIXED: Convert to 0-indexed for consistency***
+                img_idx_on_page = int(img_match_alt.group(3)) - 1
         
-        logger.debug(f"Parsed from alt text '{alt_text}': page={page_num}, idx_on_page={img_idx_on_page}")
+        logger.debug(f"Parsed from alt text '{alt_text}': page={page_num}, idx_on_page={img_idx_on_page} (0-indexed)")
         return page_num, img_idx_on_page
 
     def _find_specific_disk_image(self,
@@ -71,10 +82,13 @@ class ImageLinkProcessor:
                                  ) -> Optional[Tuple[str, int]]:
         """Finds a disk image matching specific page/index. Returns (filename, disk_index) or None."""
         for i, disk_img_name in enumerate(available_images_on_disk):
-            disk_fn_match = re.search(r'page(\d+)[-_]?img(\d+)\.', disk_img_name, re.IGNORECASE)
+            # ***FIXED: Updated pattern to match actual filename format from image_extractor.py***
+            # Looking for: fig{N}-page{P}-img{I}.{ext} format
+            disk_fn_match = re.search(r'fig\d+-page(\d+)-img(\d+)\.', disk_img_name, re.IGNORECASE)
             if disk_fn_match:
                 saved_page = int(disk_fn_match.group(1))
-                saved_idx = int(disk_fn_match.group(2))
+                # ***FIXED: Convert to 0-indexed for comparison with target_idx (which is 0-indexed)***
+                saved_idx = int(disk_fn_match.group(2)) - 1  # Convert to 0-indexed
                 if saved_page == target_page and saved_idx == target_idx:
                     # Found a disk image that semantically matches the page/index.
                     if allow_reuse_if_specific_match:
@@ -88,6 +102,16 @@ class ImageLinkProcessor:
                             return disk_img_name, i
                         else:
                             logger.debug(f"Disk image {disk_img_name} matches P:{target_page}, I:{target_idx} but was already sequentially assigned and reuse is not generally allowed for this call.")
+            
+            # ***ENHANCED: Check for legacy pattern as fallback***
+            legacy_disk_fn_match = re.search(r'page(\d+)[-_]?img(\d+)\.', disk_img_name, re.IGNORECASE)
+            if legacy_disk_fn_match:
+                saved_page = int(legacy_disk_fn_match.group(1))
+                saved_idx = int(legacy_disk_fn_match.group(2)) - 1  # Convert to 0-indexed
+                if saved_page == target_page and saved_idx == target_idx:
+                    if allow_reuse_if_specific_match or i not in sequentially_assigned_indices:
+                        logger.info(f"Legacy pattern match: MD ref (P:{target_page}, I:{target_idx}) to disk image: {disk_img_name} (index {i})")
+                        return disk_img_name, i
         return None
 
     def process_image_links(self,
@@ -124,15 +148,15 @@ class ImageLinkProcessor:
             saved_image_files = []
         
         available_images_on_disk = saved_image_files[:]
-        logger.info(f"DEBUG_INIT: available_images_on_disk initialized to: {available_images_on_disk}") # NEW DEBUG LINE
         
+        # ***FIXED: Consistent 0-indexed handling for problematic images***
         problematic_images_info: Dict[str, Dict[str, Any]] = {
-            # Key is 1-indexed for page and index_on_page
-            f"{p.get('page')}-{p.get('index_on_page', -1) + 1}": p
+            # Key uses actual 0-indexed values from extraction results
+            f"{p.get('page')}-{p.get('index_on_page', -1)}": p
             for p in image_extraction_results.get('problematic_images', [])
             if p.get('page') is not None and p.get('index_on_page') is not None
         }
-        logger.debug(f"Problematic images info (keyed 'page-idx'): {problematic_images_info}")
+        logger.debug(f"Problematic images info (keyed 'page-idx' with 0-indexed): {problematic_images_info}")
 
         sequentially_assigned_disk_indices: Set[int] = set()
         
@@ -155,18 +179,21 @@ class ImageLinkProcessor:
             logger.debug(f"Processing MD image: alt='{alt_text}', original_path='{original_path_in_md}'")
             page_num, img_idx_on_page = self._parse_page_index_from_md(alt_text, original_path_in_md)
 
-            # 1. Check for problematic image based on parsed page/index
+            # 1. Check for problematic image based on parsed page/index (using 0-indexed)
             if page_num is not None and img_idx_on_page is not None:
                 problem_key = f"{page_num}-{img_idx_on_page}"
                 if problem_key in problematic_images_info:
                     issue_info = problematic_images_info[problem_key]
                     issue_type_val = issue_info.get('issue_type', ImageIssueType.OTHER.value)
                     placeholder_filename = self._determine_placeholder_name(issue_type_val)
-                    warning_comment = (f"\n<!-- WARNING: Image from Page {page_num}, Index {img_idx_on_page} "
+                    # ***FIXED: Display 1-indexed page/image numbers in user-facing comments***
+                    display_page = page_num
+                    display_idx = img_idx_on_page + 1  # Convert back to 1-indexed for display
+                    warning_comment = (f"\n<!-- WARNING: Image from Page {display_page}, Index {display_idx} "
                                        f"had an issue: {issue_info.get('issue', 'N/A')}. Using placeholder. -->\n")
                     replacement_image_tag = f"{warning_comment}![{alt_text} (Issue: {issue_type_val})]({md_img_assets_path}/{placeholder_filename})"
                     new_content_parts.append(replacement_image_tag)
-                    logger.warning(f"MD ref P{page_num}-I{img_idx_on_page} was problematic. Using placeholder: {placeholder_filename}")
+                    logger.warning(f"MD ref P{page_num}-I{img_idx_on_page} (0-indexed) was problematic. Using placeholder: {placeholder_filename}")
                     continue # Move to next MD image
 
             # 2. Try to find a specific disk image match
@@ -188,27 +215,16 @@ class ImageLinkProcessor:
             if target_saved_image_filename:
                 replacement_image_tag = f"![{alt_text}]({md_img_assets_path}/{target_saved_image_filename})"
             else:
-                # Fallback to sequential assignment
-                logger.info(f"DEBUG: ENTERING SEQUENTIAL FOR alt='{alt_text}', path='{original_path_in_md}'") # DEBUG LINE
-                logger.info(f"DEBUG: available_images_on_disk = {available_images_on_disk}") # DEBUG LINE
-                logger.info(f"DEBUG: sequentially_assigned_disk_indices = {sequentially_assigned_disk_indices}") # DEBUG LINE
-
+                # 3. Fallback: Sequential mapping for MD refs that didn't get a specific match
+                #    or for those that didn't parse to a page/index.
                 found_sequential = False
-                if not available_images_on_disk: # Explicit check
-                    logger.warning(f"DEBUG: available_images_on_disk is EMPTY for '{alt_text}'!")
-                
                 for i, disk_img_name in enumerate(available_images_on_disk):
-                    logger.info(f"DEBUG: Sequential loop iter: i={i}, name='{disk_img_name}'") # DEBUG LINE
                     if i not in sequentially_assigned_disk_indices:
-                        sequentially_assigned_disk_indices.add(i) 
+                        sequentially_assigned_disk_indices.add(i) # Mark as used for sequential assignment
                         replacement_image_tag = f"![{alt_text}]({md_img_assets_path}/{disk_img_name})"
                         logger.info(f"Sequentially mapping MD ref '{alt_text}' (path: {original_path_in_md}) to disk image: {disk_img_name}")
                         found_sequential = True
                         break
-                    else: # DEBUG LINE
-                        logger.info(f"DEBUG: Index {i} for '{disk_img_name}' IS in sequentially_assigned_disk_indices.")
-                
-                logger.info(f"DEBUG: After loop, found_sequential = {found_sequential} for '{alt_text}'") # DEBUG LINE
                 if not found_sequential:
                     logger.warning(f"No specific or sequential disk image for MD ref: alt='{alt_text}', path='{original_path_in_md}'. Using error placeholder.")
                     replacement_image_tag = f"![{alt_text} (Image Not Found)]({md_img_assets_path}/placeholder-error.png)"

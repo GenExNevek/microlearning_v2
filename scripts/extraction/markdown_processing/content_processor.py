@@ -16,18 +16,24 @@ class ContentProcessor:
 
     def __init__(self, frontmatter_generator: FrontmatterGenerator):
         self.frontmatter_generator = frontmatter_generator
-        # Pattern to detect markdown code block: ```markdown ... ``` (non-greedy content)
-        self.markdown_code_block_pattern = r'^\s*```\s*markdown\s*\n(.*?)\n```\s*$'
         
-        # Patterns to detect frontmatter (non-greedy content for frontmatter and body)
+        # ***ENHANCED: Expanded pattern to handle various markdown code block variations***
+        # Pattern to detect markdown code block: ```markdown|md|Markdown|MARKDOWN ... ``` (case-insensitive, non-greedy content)
+        self.markdown_code_block_pattern = r'^\s*```\s*(?:markdown|md)\s*\n(.*?)\n```\s*$'
+        
+        # ***ENHANCED: More robust frontmatter patterns***
         # Order matters: check for frontmatter inside markdown block first.
         self.frontmatter_patterns = [
             # Frontmatter inside a markdown block: ```markdown\n---\n...\n---\n...```
             # Captures: (1) frontmatter_text, (2) body_after_frontmatter_in_block
-            r'^\s*```\s*markdown\s*\n\s*---\s*\n(.*?)\n---\s*\n*(.*?)\n```\s*$',
+            r'^\s*```\s*(?:markdown|md)\s*\n\s*---\s*\n(.*?)\n---\s*\n*(.*?)\n```\s*$',
+            # ***ENHANCED: Handle frontmatter with optional trailing newlines before closing ---***
             # Frontmatter at the very start: --- ... ---
             # Captures: (1) frontmatter_text, (2) body_after_frontmatter
-            r'^\s*---\s*\n(.*?)\n---\s*\n*(.*)'
+            r'^\s*---\s*\n(.*?)\n---\s*\n*(.*)',
+            # ***ENHANCED: Handle frontmatter that ends without trailing newline (EOF case)***
+            # Frontmatter at start but ending at EOF: --- ... ---$
+            r'^\s*---\s*\n(.*?)\n---\s*$'
         ]
 
     def process_llm_output(self,
@@ -57,11 +63,16 @@ class ContentProcessor:
             match = re.search(pattern, body_content, re.DOTALL | re.IGNORECASE)
             if match:
                 llm_frontmatter_text = match.group(1).strip()
-                body_content = match.group(2).strip() # Content after the frontmatter
-                logger.debug(f"Found LLM frontmatter using pattern index {i}. Body is now: '{body_content[:100]}...'")
+                # ***ENHANCED: Handle patterns that may not have a body group (EOF case)***
+                try:
+                    body_content = match.group(2).strip() if len(match.groups()) >= 2 else ""
+                except IndexError:
+                    body_content = ""
+                logger.debug(f"Found LLM frontmatter using pattern index {i}. Body length: {len(body_content)}")
                 break
         
         if not llm_frontmatter_text: 
+            # ***ENHANCED: Case-insensitive matching for markdown code blocks***
             markdown_block_match = re.search(self.markdown_code_block_pattern, body_content, re.DOTALL | re.IGNORECASE)
             if markdown_block_match:
                 body_content = markdown_block_match.group(1).strip()
@@ -72,30 +83,33 @@ class ContentProcessor:
         merged_metadata = base_metadata.copy()
         if llm_frontmatter_text:
             try:
+                # ***ENHANCED: Better error handling for YAML parsing***
                 llm_extracted_metadata = yaml.safe_load(llm_frontmatter_text)
+                
                 if isinstance(llm_extracted_metadata, dict):
-                    logger.info(f"Successfully parsed LLM frontmatter: {llm_extracted_metadata}")
+                    logger.info(f"Successfully parsed LLM frontmatter with {len(llm_extracted_metadata)} fields")
 
-                    # Validate and merge 'unit-title'
-                    llm_unit_title = llm_extracted_metadata.get('unit-title')
-                    if isinstance(llm_unit_title, str):
-                        merged_metadata['unit_title'] = llm_unit_title
-                        logger.debug(f"Updated 'unit_title' from LLM: \"{merged_metadata['unit_title']}\"")
-                    elif llm_unit_title is not None: # It exists but is not a string
-                        logger.warning(f"LLM 'unit-title' (value: '{llm_unit_title}') is not a string. Using base/default: \"{merged_metadata.get('unit_title')}\"")
-
-                    # Validate and merge 'subject'
-                    llm_subject = llm_extracted_metadata.get('subject')
-                    if isinstance(llm_subject, str):
-                        merged_metadata['subject'] = llm_subject
-                        logger.debug(f"Updated 'subject' from LLM: \"{merged_metadata['subject']}\"")
-                    elif llm_subject is not None: # It exists but is not a string
-                        logger.warning(f"LLM 'subject' (value: '{llm_subject}') is not a string. Using base/default: \"{merged_metadata.get('subject')}\"")
-                        
+                    # ***ENHANCED: More robust field validation and merging***
+                    self._merge_metadata_field(llm_extracted_metadata, merged_metadata, 'unit-title', 'unit_title')
+                    self._merge_metadata_field(llm_extracted_metadata, merged_metadata, 'subject', 'subject')
+                    
+                    # ***ENHANCED: Handle additional common LLM fields***
+                    self._merge_metadata_field(llm_extracted_metadata, merged_metadata, 'title', 'unit_title')  # Alternative field name
+                    self._merge_metadata_field(llm_extracted_metadata, merged_metadata, 'course', 'subject')     # Alternative field name
+                    
+                elif llm_extracted_metadata is None:
+                    logger.warning("LLM frontmatter parsed as None (empty YAML). Using base metadata only.")
                 else:
-                    logger.warning(f"LLM frontmatter did not parse into a dictionary: {type(llm_extracted_metadata)}. Content: '{llm_frontmatter_text}'")
+                    logger.warning(f"LLM frontmatter did not parse into a dictionary: {type(llm_extracted_metadata)}. Content: '{llm_frontmatter_text[:100]}...'")
+                    
             except yaml.YAMLError as e:
-                logger.error(f"Error parsing LLM frontmatter: {e}. LLM frontmatter text: '{llm_frontmatter_text}'")
+                logger.error(f"Error parsing LLM frontmatter as YAML: {e}")
+                logger.debug(f"Problematic YAML content: '{llm_frontmatter_text}'")
+                # ***ENHANCED: Attempt to extract key fields even from malformed YAML***
+                self._extract_fallback_metadata(llm_frontmatter_text, merged_metadata)
+            except Exception as e:
+                logger.error(f"Unexpected error processing LLM frontmatter: {e}")
+                logger.debug(f"Frontmatter content: '{llm_frontmatter_text}'")
         else:
             logger.info("No frontmatter found in LLM response to parse.")
 
@@ -106,3 +120,54 @@ class ContentProcessor:
         
         logger.info("Finished processing LLM output.")
         return full_processed_content, merged_metadata
+
+    def _merge_metadata_field(self, 
+                             llm_metadata: Dict[str, Any], 
+                             merged_metadata: Dict[str, Any], 
+                             llm_key: str, 
+                             merged_key: str) -> None:
+        """
+        ***ENHANCED: Robust field merging with validation***
+        Safely merge a field from LLM metadata to merged metadata with type validation.
+        """
+        llm_value = llm_metadata.get(llm_key)
+        if llm_value is not None:
+            if isinstance(llm_value, str) and llm_value.strip():
+                merged_metadata[merged_key] = llm_value.strip()
+                logger.debug(f"Updated '{merged_key}' from LLM '{llm_key}': \"{merged_metadata[merged_key]}\"")
+            elif not isinstance(llm_value, str):
+                logger.warning(f"LLM '{llm_key}' (value: '{llm_value}') is not a string ({type(llm_value)}). Using base/default: \"{merged_metadata.get(merged_key)}\"")
+            else:
+                logger.warning(f"LLM '{llm_key}' is empty string. Using base/default: \"{merged_metadata.get(merged_key)}\"")
+
+    def _extract_fallback_metadata(self, 
+                                  malformed_yaml: str, 
+                                  merged_metadata: Dict[str, Any]) -> None:
+        """
+        ***ENHANCED: Fallback extraction for malformed YAML***
+        Attempt to extract key metadata fields even from malformed YAML using regex.
+        """
+        logger.info("Attempting fallback metadata extraction from malformed YAML")
+        
+        # Common patterns for key fields
+        fallback_patterns = {
+            'unit_title': [
+                r'unit-title\s*:\s*["\']?(.*?)["\']?\s*(?:\n|$)',
+                r'title\s*:\s*["\']?(.*?)["\']?\s*(?:\n|$)',
+                r'unit_title\s*:\s*["\']?(.*?)["\']?\s*(?:\n|$)'
+            ],
+            'subject': [
+                r'subject\s*:\s*["\']?(.*?)["\']?\s*(?:\n|$)',
+                r'course\s*:\s*["\']?(.*?)["\']?\s*(?:\n|$)'
+            ]
+        }
+        
+        for field_key, patterns in fallback_patterns.items():
+            for pattern in patterns:
+                match = re.search(pattern, malformed_yaml, re.IGNORECASE)
+                if match:
+                    value = match.group(1).strip()
+                    if value and value not in ['""', "''"]:  # Avoid empty quoted strings
+                        merged_metadata[field_key] = value
+                        logger.info(f"Extracted '{field_key}' via fallback: \"{value}\"")
+                        break
