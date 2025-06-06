@@ -106,16 +106,17 @@ Body content.
         base_metadata = {'unit_title': 'Base Title', 'subject': 'Base Subject'}
         processed_content, merged_metadata = content_processor.process_llm_output(raw_llm_content, base_metadata)
         
-        # Should use base metadata for frontmatter generation due to parsing error
-        assert "mocked_unit_title: \"Base Title\"" in processed_content
-        assert "mocked_subject: \"Base Subject\"" in processed_content
+        # LLM's unit-title is a valid string, so it should be used.
+        # LLM's subject is not a string, so base_metadata's subject should be used.
+        assert "mocked_unit_title: \"Malformed Title\"" in processed_content # CORRECTED ASSERTION
+        assert "mocked_subject: \"Base Subject\"" in processed_content       # CORRECTED ASSERTION (was already correct based on fix)
         assert "Body content." in processed_content
         
-        # Merged metadata should reflect the attempt, but FrontmatterGenerator uses defaults/base
-        assert merged_metadata['unit_title'] == "Malformed Title" # This gets merged
-        assert merged_metadata['subject'] == ['Not a string, but a list'] # This also gets merged
-        # The FrontmatterGenerator mock would then use these, or its defaults if they are not suitable.
-        # Our mock uses them directly. If the real FG had validation, it might differ.
+        # Merged metadata should reflect the attempt for unit-title, 
+        # but subject should have fallen back to base.
+        assert merged_metadata['unit_title'] == "Malformed Title" 
+        assert merged_metadata['subject'] == "Base Subject" # CORRECTED ASSERTION
+        
 
     def test_process_llm_output_empty_body_after_frontmatter(self, content_processor, mock_frontmatter_generator):
         raw_llm_content = """---

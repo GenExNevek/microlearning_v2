@@ -38,7 +38,7 @@ class ContentProcessor:
         Processes raw LLM output.
         1. Extracts and parses frontmatter provided by the LLM.
         2. Cleans the main content body (e.g., removes markdown code block wrappers).
-        3. Merges LLM-extracted metadata with base metadata.
+        3. Merges LLM-extracted metadata with base metadata, validating types for specific fields.
         4. Generates the final frontmatter using the merged metadata.
         5. Combines final frontmatter and cleaned body.
 
@@ -61,11 +61,7 @@ class ContentProcessor:
                 logger.debug(f"Found LLM frontmatter using pattern index {i}. Body is now: '{body_content[:100]}...'")
                 break
         
-        # If no frontmatter block was found by the combined patterns,
-        # body_content is still the original raw_llm_content.
-        # We still need to check for and remove an outer ```markdown ... ``` wrapper
-        # if it exists and wasn't handled by a frontmatter pattern.
-        if not llm_frontmatter_text: # Only if frontmatter wasn't already extracted
+        if not llm_frontmatter_text: 
             markdown_block_match = re.search(self.markdown_code_block_pattern, body_content, re.DOTALL | re.IGNORECASE)
             if markdown_block_match:
                 body_content = markdown_block_match.group(1).strip()
@@ -79,12 +75,23 @@ class ContentProcessor:
                 llm_extracted_metadata = yaml.safe_load(llm_frontmatter_text)
                 if isinstance(llm_extracted_metadata, dict):
                     logger.info(f"Successfully parsed LLM frontmatter: {llm_extracted_metadata}")
-                    if 'unit-title' in llm_extracted_metadata:
-                        merged_metadata['unit_title'] = llm_extracted_metadata['unit-title']
+
+                    # Validate and merge 'unit-title'
+                    llm_unit_title = llm_extracted_metadata.get('unit-title')
+                    if isinstance(llm_unit_title, str):
+                        merged_metadata['unit_title'] = llm_unit_title
                         logger.debug(f"Updated 'unit_title' from LLM: \"{merged_metadata['unit_title']}\"")
-                    if 'subject' in llm_extracted_metadata:
-                        merged_metadata['subject'] = llm_extracted_metadata['subject']
+                    elif llm_unit_title is not None: # It exists but is not a string
+                        logger.warning(f"LLM 'unit-title' (value: '{llm_unit_title}') is not a string. Using base/default: \"{merged_metadata.get('unit_title')}\"")
+
+                    # Validate and merge 'subject'
+                    llm_subject = llm_extracted_metadata.get('subject')
+                    if isinstance(llm_subject, str):
+                        merged_metadata['subject'] = llm_subject
                         logger.debug(f"Updated 'subject' from LLM: \"{merged_metadata['subject']}\"")
+                    elif llm_subject is not None: # It exists but is not a string
+                        logger.warning(f"LLM 'subject' (value: '{llm_subject}') is not a string. Using base/default: \"{merged_metadata.get('subject')}\"")
+                        
                 else:
                     logger.warning(f"LLM frontmatter did not parse into a dictionary: {type(llm_extracted_metadata)}. Content: '{llm_frontmatter_text}'")
             except yaml.YAMLError as e:
@@ -94,7 +101,6 @@ class ContentProcessor:
 
         final_frontmatter_str = self.frontmatter_generator.generate_frontmatter(merged_metadata)
         
-        # Ensure two newlines between frontmatter and body, but only if body is not empty
         separator = "\n\n" if body_content else ""
         full_processed_content = f"{final_frontmatter_str}{separator}{body_content}"
         
