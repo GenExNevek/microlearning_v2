@@ -26,6 +26,49 @@ class ImageLinkProcessor:
             return "placeholder-corrupt.png"
         return "placeholder-error.png"
 
+    def _is_correct_assets_path(self, path: str, unit_title_id: str) -> bool:
+        """
+        Check if the path already points to the correct assets folder.
+        Returns True if the path should be preserved as-is.
+        """
+        if path.startswith(('http://', 'https://', '/', 'data:')):
+            return True  # External/absolute paths should be preserved
+            
+        # Check if path already points to the correct assets directory
+        safe_unit_title_id = re.sub(r'[^\w\-_\.]', '_', unit_title_id)
+        expected_assets_dir = f"{safe_unit_title_id}{settings.IMAGE_ASSETS_SUFFIX}"
+        
+        # Check for both relative forms: "./assets-dir/file.png" and "assets-dir/file.png"
+        if path.startswith(f"./{expected_assets_dir}/") or path.startswith(f"{expected_assets_dir}/"):
+            logger.debug(f"Path '{path}' already points to correct assets directory '{expected_assets_dir}', preserving as-is")
+            return True
+            
+        return False
+
+    def _is_llm_generated_wrong_path(self, path: str, unit_title_id: str) -> bool:
+        """
+        Check if the path appears to be an LLM-generated incorrect assets path that needs correction.
+        Returns True if this looks like a wrong assets path that should be corrected.
+        """
+        if path.startswith(('http://', 'https://', '/', 'data:')):
+            return False  # External/absolute paths are not LLM-generated wrong paths
+            
+        # Check for common LLM-generated wrong patterns like:
+        # ./unit-1-3-img-assets/, ./unit-assets/, ./img-assets/, etc.
+        wrong_patterns = [
+            r'\.?/?unit[-_]?\d*[-_]?\d*[-_]?img[-_]?assets?/',
+            r'\.?/?img[-_]?assets?/',
+            r'\.?/?assets?/',
+            r'\.?/?images?/',
+        ]
+        
+        for pattern in wrong_patterns:
+            if re.match(pattern, path, re.IGNORECASE):
+                logger.debug(f"Path '{path}' matches LLM wrong pattern '{pattern}', will correct to proper assets dir")
+                return True
+                
+        return False
+
     def _parse_page_index_from_md(self, alt_text: str, md_path: str) -> Tuple[Optional[int], Optional[int]]:
         """Helper to parse page and index from markdown alt text or path."""
         page_num, img_idx_on_page = None, None
@@ -186,8 +229,20 @@ class ImageLinkProcessor:
             original_path_in_md = match_obj.group(2)
             replacement_image_tag = match_obj.group(0) 
 
-            if original_path_in_md.startswith(('http://', 'https://', '/', 'data:')):
+            # ***NEW: Check if path is already correct - if so, preserve it***
+            if self._is_correct_assets_path(original_path_in_md, unit_title_id):
+                logger.debug(f"Preserving correctly formatted path: {original_path_in_md}")
                 new_content_parts.append(replacement_image_tag)
+                continue
+
+            # ***NEW: Check if this is an LLM-generated wrong path that needs correction***
+            if self._is_llm_generated_wrong_path(original_path_in_md, unit_title_id):
+                # Extract just the filename from the wrong path and use correct assets directory
+                filename_from_wrong_path = os.path.basename(original_path_in_md)
+                corrected_path = f"{md_img_assets_path}/{filename_from_wrong_path}"
+                corrected_tag = f"![{alt_text}]({corrected_path})"
+                logger.info(f"Corrected LLM wrong path: '{original_path_in_md}' -> '{corrected_path}'")
+                new_content_parts.append(corrected_tag)
                 continue
 
             logger.debug(f"Processing MD image: alt='{alt_text}', original_path='{original_path_in_md}'")
@@ -208,56 +263,62 @@ class ImageLinkProcessor:
                     warning_comment = (f"\n<!-- WARNING: Image from Page {display_page}, Index {display_idx} "
                                        f"had an issue: {issue_info.get('issue', 'N/A')}. Using placeholder. -->\n")
                     replacement_image_tag = f"{warning_comment}![{alt_text} (Issue: {issue_type_val})]({md_img_assets_path}/{placeholder_filename})"
+                    
                     new_content_parts.append(replacement_image_tag)
-                    logger.warning(f"MD ref P{page_num}(1-idx)-I{img_idx_on_page}(0-idx) was problematic. Using placeholder: {placeholder_filename}")
-                    continue # Move to next MD image
+                    continue
 
-            # 2. Try to find a specific disk image match
-            target_saved_image_filename = None
+            # 2. Specific lookup by parsed page/index
             if page_num is not None and img_idx_on_page is not None:
-                # Pass 1-indexed page_num and 0-indexed img_idx_on_page to _find_specific_disk_image
-                specific_match_result = self._find_specific_disk_image(
-                    page_num, img_idx_on_page, available_images_on_disk, 
-                    sequentially_assigned_disk_indices, 
-                    allow_reuse_if_specific_match=True 
+                specific_result = self._find_specific_disk_image(
+                    page_num, img_idx_on_page, available_images_on_disk, sequentially_assigned_disk_indices
                 )
-                if specific_match_result:
-                    target_saved_image_filename, _ = specific_match_result 
+                if specific_result:
+                    found_disk_filename, found_disk_index = specific_result
+                    replacement_image_tag = f"![{alt_text}]({md_img_assets_path}/{found_disk_filename})"
+                    sequentially_assigned_disk_indices.add(found_disk_index)
+                    new_content_parts.append(replacement_image_tag)
+                    continue
+
+            # 3. Direct filename match (if MD path contains a filename that exists on disk)
+            filename_from_md_path = os.path.basename(original_path_in_md) if original_path_in_md else ""
+            if filename_from_md_path and filename_from_md_path in available_images_on_disk:
+                # Check if this disk image was already used
+                disk_index = available_images_on_disk.index(filename_from_md_path)
+                if disk_index not in sequentially_assigned_disk_indices:
+                    replacement_image_tag = f"![{alt_text}]({md_img_assets_path}/{filename_from_md_path})"
+                    sequentially_assigned_disk_indices.add(disk_index)
+                    new_content_parts.append(replacement_image_tag)
+                    continue
+
+            # 4. Sequential assignment: use next available disk image
+            next_available_index = None
+            for idx, _ in enumerate(available_images_on_disk):
+                if idx not in sequentially_assigned_disk_indices:
+                    next_available_index = idx
+                    break
             
-            if target_saved_image_filename:
-                replacement_image_tag = f"![{alt_text}]({md_img_assets_path}/{target_saved_image_filename})"
+            if next_available_index is not None:
+                chosen_disk_filename = available_images_on_disk[next_available_index]
+                replacement_image_tag = f"![{alt_text}]({md_img_assets_path}/{chosen_disk_filename})"
+                sequentially_assigned_disk_indices.add(next_available_index)
+                logger.debug(f"Sequential assignment: MD ref '{original_path_in_md}' -> disk image '{chosen_disk_filename}' (index {next_available_index})")
             else:
-                # 3. Fallback: Sequential mapping
-                found_sequential = False
-                for i, disk_img_name in enumerate(available_images_on_disk):
-                    if i not in sequentially_assigned_disk_indices:
-                        sequentially_assigned_disk_indices.add(i) 
-                        replacement_image_tag = f"![{alt_text}]({md_img_assets_path}/{disk_img_name})"
-                        logger.info(f"Sequentially mapping MD ref '{alt_text}' (path: {original_path_in_md}) to disk image: {disk_img_name}")
-                        found_sequential = True
-                        break
-                if not found_sequential:
-                    logger.warning(f"No specific or sequential disk image for MD ref: alt='{alt_text}', path='{original_path_in_md}'. Using error placeholder.")
-                    replacement_image_tag = f"![{alt_text} (Image Not Found)]({md_img_assets_path}/placeholder-error.png)"
-            
+                # 5. No disk images available - use generic placeholder
+                replacement_image_tag = f"![{alt_text}]({md_img_assets_path}/placeholder-image.png)"
+                logger.warning(f"No available disk images for MD ref '{original_path_in_md}'. Using generic placeholder.")
+
             new_content_parts.append(replacement_image_tag)
 
+        # Add any remaining content after the last image reference
         new_content_parts.append(content[last_end:])
-        processed_content = "".join(new_content_parts)
-        
-        final_linked_disk_images = set()
-        for match in re.finditer(rf'!\[.*?\]\({re.escape(md_img_assets_path)}/([^\)]+?)\)', processed_content):
-            img_filename_in_link = match.group(1)
-            if not img_filename_in_link.startswith("placeholder-"):
-                final_linked_disk_images.add(img_filename_in_link)
+        processed_content = ''.join(new_content_parts)
 
-        truly_unused_disk_images = [
-            disk_name for disk_name in available_images_on_disk if disk_name not in final_linked_disk_images
-        ]
+        # Report unused disk images
+        used_indices = sequentially_assigned_disk_indices
+        unused_images = [available_images_on_disk[i] for i in range(len(available_images_on_disk)) if i not in used_indices]
+        if unused_images:
+            unused_list = ', '.join(unused_images)
+            warning_suffix = f"\n\n<!-- WARNING: {len(unused_images)} extracted images on disk were not referenced in the markdown: {unused_list}. -->\n"
+            processed_content += warning_suffix
 
-        if truly_unused_disk_images:
-            logger.warning(f"Found {len(truly_unused_disk_images)} unreferenced disk images: {truly_unused_disk_images}")
-            processed_content += (f"\n\n<!-- WARNING: {len(truly_unused_disk_images)} extracted images on disk "
-                                  f"were not referenced in the markdown: {', '.join(truly_unused_disk_images)}. -->\n")
-            
         return processed_content

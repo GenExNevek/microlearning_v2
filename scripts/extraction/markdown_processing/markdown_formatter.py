@@ -1,4 +1,3 @@
-
 # scripts/extraction/markdown_processing/markdown_formatter.py
 
 """
@@ -9,7 +8,7 @@ This class coordinates various specialist processors.
 import os
 import re # For final cleanup
 import logging
-from typing import Dict, Optional, Any, Tuple
+from typing import Dict, Optional, Any, Tuple # Ensure Tuple is imported
 
 from ...config import settings, extraction_prompt # Relative import for settings and prompt
 from ..image_processing.image_extractor import ImageExtractor # From parent package
@@ -47,10 +46,10 @@ class MarkdownFormatter:
         """Delegates to MetadataExtractor to get path-based metadata."""
         return self.metadata_extractor.extract_metadata_from_path(pdf_path)
 
-    def _get_image_assets_dir(self, pdf_path: str, metadata: Dict[str, Any]) -> str:
+    def _get_image_assets_dir(self, pdf_path: str, metadata: Dict[str, Any]) -> Tuple[str, str]:
         """
         Determine the image assets directory path on disk.
-        ***ENHANCED: Added error handling for directory creation operations***
+        Returns the full path to the image assets directory and the base filename used for assets.
         """
         try:
             abs_pdf_source_dir = os.path.abspath(settings.PDF_SOURCE_DIR)
@@ -74,56 +73,72 @@ class MarkdownFormatter:
         
         md_rel_base = os.path.splitext(rel_path)[0]
         target_md_parent_dir = os.path.join(settings.MARKDOWN_TARGET_DIR, os.path.dirname(md_rel_base))
-        md_filename_without_ext = os.path.basename(md_rel_base)
+        md_filename_without_ext = os.path.basename(md_rel_base) # This is the key: e.g., UNI0003_camb_as_physics_m1_l3
         img_assets_dir_name = f"{md_filename_without_ext}{settings.IMAGE_ASSETS_SUFFIX}"
         img_assets_full_path = os.path.join(target_md_parent_dir, img_assets_dir_name)
         
-        # ***ENHANCED: Robust directory creation with error handling***
         try:
             os.makedirs(img_assets_full_path, exist_ok=True)
             logger.debug(f"Created/verified image assets directory: {img_assets_full_path}")
         except PermissionError as e: # pragma: no cover
             logger.error(f"Permission denied creating directory {img_assets_full_path}: {e}")
-            # Try alternative location in temp directory
             import tempfile
             fallback_dir_name = f"microlearning_assets_{os.path.basename(target_md_parent_dir)}_{img_assets_dir_name}"
             fallback_dir = os.path.join(tempfile.gettempdir(), fallback_dir_name)
             try:
                 os.makedirs(fallback_dir, exist_ok=True)
                 logger.warning(f"Using fallback directory due to permission error: {fallback_dir}")
-                return fallback_dir
+                return fallback_dir, md_filename_without_ext
             except Exception as fallback_e:
                 logger.critical(f"Failed to create fallback directory {fallback_dir}: {fallback_e}")
                 raise RuntimeError(f"Cannot create image assets directory (permission error and fallback failed): {e}") from fallback_e
         except OSError as e: # pragma: no cover
             if hasattr(e, 'winerror') and e.winerror == 123: # ERROR_INVALID_NAME (Windows)
                  logger.error(f"Invalid characters in path for directory {img_assets_full_path}: {e}")
-                 # Attempt to sanitize and retry (simple sanitization)
                  sanitized_img_assets_dir_name = re.sub(r'[<>:"/\\|?*]', '_', img_assets_dir_name)
                  if sanitized_img_assets_dir_name != img_assets_dir_name:
                     img_assets_full_path = os.path.join(target_md_parent_dir, sanitized_img_assets_dir_name)
                     try:
                         os.makedirs(img_assets_full_path, exist_ok=True)
                         logger.warning(f"Used sanitized directory name: {img_assets_full_path}")
+                        # On success, md_filename_without_ext is still the logical base
+                        # No need to change md_filename_without_ext for sanitized dir name
                     except Exception as sanitize_e:
                         logger.error(f"Failed to create directory even with sanitized name: {sanitize_e}")
                         raise RuntimeError(f"Cannot create image assets directory (invalid name and sanitize failed): {e}") from sanitize_e
-                 else: # Sanitization didn't change the name, original error stands
+                 else:
                     raise RuntimeError(f"Cannot create image assets directory (invalid name): {e}") from e
 
             elif "File name too long" in str(e) or (hasattr(e, 'errno') and e.errno == 36):  # ENAMETOOLONG
-                # Truncate the directory name and retry
-                max_len_component = 200 # Max length for a component can vary, be conservative
+                max_len_component = 200 
                 if len(img_assets_dir_name) > max_len_component:
-                    truncated_name = img_assets_dir_name[:max_len_component] + settings.IMAGE_ASSETS_SUFFIX
-                    img_assets_full_path = os.path.join(target_md_parent_dir, truncated_name)
+                    # The original md_filename_without_ext is still the logical identifier for the content.
+                    # We are truncating the directory name on disk, but links should conceptually use the original identifier
+                    # to find files *within* that (potentially truncated name) directory.
+                    # This assumes the filenames themselves within the directory are not affected by this truncation.
+                    original_asset_suffix_len = len(settings.IMAGE_ASSETS_SUFFIX)
+                    truncated_base_len = max_len_component - original_asset_suffix_len
+                    if truncated_base_len <=0: # Should not happen with reasonable max_len_component
+                         raise RuntimeError(f"Cannot create image assets directory (IMAGE_ASSETS_SUFFIX too long for max_len_component): {e}") from e
+
+                    # Truncate md_filename_without_ext part if it's too long to form the directory name
+                    # This is tricky because md_filename_without_ext is also used by ImageLinkProcessor.
+                    # For now, let's assume md_filename_without_ext is the one used for the dir name base.
+                    # If this base part `md_filename_without_ext` is too long, we must also use a truncated version
+                    # for the `ImageLinkProcessor` later, or the paths won't match.
+                    # However, the initial problem stated the *directory name* was wrong, not the *filenames inside*.
+                    # So, we pass the *original* md_filename_without_ext, as it's the base for image *filenames*.
+                    # The directory name itself gets truncated.
+                    truncated_dir_name_component = img_assets_dir_name[:max_len_component]
+                    
+                    img_assets_full_path = os.path.join(target_md_parent_dir, truncated_dir_name_component)
                     try:
                         os.makedirs(img_assets_full_path, exist_ok=True)
                         logger.warning(f"Used truncated directory name due to length limit: {img_assets_full_path}")
                     except Exception as truncate_e:
                         logger.error(f"Failed to create directory even with truncated name: {truncate_e}")
                         raise RuntimeError(f"Cannot create image assets directory (name too long and truncate failed): {e}") from truncate_e
-                else: # Length issue might be with parent path, not just the final component
+                else:
                     logger.error(f"OS error (possibly path too long overall) creating directory {img_assets_full_path}: {e}")
                     raise RuntimeError(f"Cannot create image assets directory (OS error, possibly path too long): {e}") from e
             else:
@@ -133,7 +148,7 @@ class MarkdownFormatter:
             logger.error(f"Unexpected error creating directory {img_assets_full_path}: {e}")
             raise RuntimeError(f"Cannot create image assets directory (unexpected error): {e}") from e
         
-        return img_assets_full_path
+        return img_assets_full_path, md_filename_without_ext
 
     def _extract_images(self, pdf_info: Dict[str, Any], metadata: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -141,23 +156,28 @@ class MarkdownFormatter:
         Returns the full report dictionary from ImageExtractor.
         """
         pdf_path_for_extraction = pdf_info.get('normalized_path') or pdf_info.get('path')
+        # Default in case of early exit or error determining it
+        md_file_basename_for_assets = os.path.splitext(os.path.basename(pdf_path_for_extraction or "unknown_file"))[0]
         
         if not pdf_path_for_extraction:
             logger.warning("No PDF path available in pdf_info for image extraction.")
             return {
                 'success': False, 'errors': ['No PDF path available'], 'extracted_count': 0, 
                 'failed_count': 0, 'problematic_images': [], 'metrics': {}, 
-                'output_dir': None, 'report_path': None
+                'output_dir': None, 'report_path': None,
+                'md_file_basename_for_assets': md_file_basename_for_assets 
             }
         
+        img_assets_output_dir = None
         try:
-            img_assets_output_dir = self._get_image_assets_dir(pdf_path_for_extraction, metadata)
+            img_assets_output_dir, md_file_basename_for_assets = self._get_image_assets_dir(pdf_path_for_extraction, metadata)
         except RuntimeError as e:
             logger.error(f"Failed to determine or create image assets directory: {e}")
             return {
                 'success': False, 'errors': [f"Failed to get/create image assets directory: {e}"], 
                 'extracted_count': 0, 'failed_count': 0, 'problematic_images': [], 
-                'metrics': {}, 'output_dir': None, 'report_path': None
+                'metrics': {}, 'output_dir': None, 'report_path': None,
+                'md_file_basename_for_assets': md_file_basename_for_assets
             }
         
         try:
@@ -174,8 +194,10 @@ class MarkdownFormatter:
             if results_report.get('report_path'):
                 logger.info(f"Image extraction report: {results_report['report_path']}")
             
-            if 'output_dir' not in results_report: # Ensure output_dir is in the report
+            if 'output_dir' not in results_report:
                 results_report['output_dir'] = img_assets_output_dir
+            
+            results_report['md_file_basename_for_assets'] = md_file_basename_for_assets
             
             return results_report
         except Exception as e: # pragma: no cover
@@ -184,7 +206,8 @@ class MarkdownFormatter:
             return {
                 'success': False, 'errors': [error_msg], 'extracted_count': 0, 
                 'failed_count': 0, 'problematic_images': [], 'metrics': {}, 
-                'output_dir': img_assets_output_dir, 'report_path': None
+                'output_dir': img_assets_output_dir, 'report_path': None,
+                'md_file_basename_for_assets': md_file_basename_for_assets
             }
 
     def extract_and_format(self, 
@@ -197,18 +220,16 @@ class MarkdownFormatter:
         original_pdf_path = pdf_info.get('path')
 
         if metadata_override:
-            current_metadata = metadata_override.copy() # Use a copy
+            current_metadata = metadata_override.copy()
         elif original_pdf_path:
             current_metadata = self.extract_metadata_from_path(original_pdf_path)
         else:
-            current_metadata = self.extract_metadata_from_path("unknown_path.pdf") # Default
+            current_metadata = self.extract_metadata_from_path("unknown_path.pdf")
             logger.warning("No PDF path or metadata override. Using default metadata.")
         
-        # Ensure essential metadata for image path generation exists
         if 'unit_title_id' not in current_metadata or not current_metadata['unit_title_id']:
              current_metadata['unit_title_id'] = os.path.splitext(os.path.basename(original_pdf_path or "unknown_unit"))[0]
              logger.warning(f"Missing 'unit_title_id' in metadata, derived as {current_metadata['unit_title_id']}")
-
 
         image_extraction_results = self._extract_images(pdf_info, current_metadata)
         
@@ -254,7 +275,6 @@ class MarkdownFormatter:
                     'success': False, 'error': err_msg, 'content': raw_llm_content_str,
                     'metadata': current_metadata, 'image_extraction': image_extraction_results
                 }
-        # This case should ideally be caught by the try-except block for LLM call
         return {'success': False, 'error': "LLM call did not produce content or failed silently.", 
                 'metadata': current_metadata, 'image_extraction': image_extraction_results}
 
@@ -271,47 +291,30 @@ class MarkdownFormatter:
         """
         logger.info("Starting markdown post-processing orchestration.")
 
-        # ContentProcessor.process_llm_output returns:
-        # (final_frontmatter_str + separator + body_content, merged_metadata)
-        # The final_frontmatter_str is generated by FrontmatterGenerator and should be clean.
         content_with_final_frontmatter, merged_metadata = \
             self.content_processor.process_llm_output(raw_llm_content, base_metadata)
         
-        # Split the final frontmatter (generated by us) from the body (from LLM, cleaned)
-        # The frontmatter generated by `FrontmatterGenerator` ends with `---`
-        # and `ContentProcessor` adds `\n\n` if body_content exists.
-        
-        # Regex to robustly find our generated frontmatter:
-        # ^(---\s*\n(?:.|\n)*?\n---\s*)(\n\n)?(.*)
-        # Group 1: The frontmatter block itself
-        # Group 2: Optional double newline separator
-        # Group 3: The rest of the content (body)
         match = re.match(r'^(---\s*\n(?:.|\n)*?\n---\s*)(\n\n)?((?:.|\n)*)', content_with_final_frontmatter, re.DOTALL)
 
         final_frontmatter_part = ""
-        body_part = "" # Default to empty if no body
+        body_part = ""
 
         if match:
             final_frontmatter_part = match.group(1)
-            separator = match.group(2) or "" # Handles case where body might be empty
             body_part = match.group(3)
             
-            # Ensure frontmatter has trailing newlines if body exists or if it's the only content
             if body_part:
                 if not final_frontmatter_part.endswith("\n\n"):
                     final_frontmatter_part = final_frontmatter_part.rstrip('\n') + "\n\n"
-            else: # No body, just frontmatter
+            else:
                  final_frontmatter_part = final_frontmatter_part.rstrip('\n')
             
             logger.debug(f"Split generated frontmatter. Body length: {len(body_part)}")
         else:
-            # This case should ideally not happen if ContentProcessor works correctly.
-            # It means content_with_final_frontmatter didn't start with valid frontmatter.
             logger.warning("Could not reliably split final frontmatter from body using regex. Assuming no frontmatter or malformed.")
-            # Fallback: treat all content as body, and regenerate frontmatter.
             body_part = content_with_final_frontmatter
             final_frontmatter_part = self.frontmatter_generator.generate_frontmatter(merged_metadata)
-            if body_part: # Add separator if body exists
+            if body_part:
                 final_frontmatter_part += "\n\n"
 
 
@@ -326,43 +329,57 @@ class MarkdownFormatter:
         if not actual_img_assets_dir_on_disk and original_pdf_path: # pragma: no cover
             logger.warning("Reconstructing actual_img_assets_dir_on_disk using original_pdf_path as it was missing from extraction results.")
             try:
-                # Ensure 'unit_title_id' is in merged_metadata for _get_image_assets_dir
-                if 'unit_title_id' not in merged_metadata or not merged_metadata['unit_title_id']:
+                if 'unit_title_id' not in merged_metadata or not merged_metadata['unit_title_id']: # Ensure for _get_image_assets_dir
                     merged_metadata['unit_title_id'] = os.path.splitext(os.path.basename(original_pdf_path or "unknown_unit"))[0]
-                actual_img_assets_dir_on_disk = self._get_image_assets_dir(original_pdf_path, merged_metadata)
+                
+                # _get_image_assets_dir now returns a tuple, we only need the path here
+                actual_img_assets_dir_on_disk, _ = self._get_image_assets_dir(original_pdf_path, merged_metadata)
             except RuntimeError as e:
                 logger.error(f"Failed to reconstruct image assets directory: {e}")
-                actual_img_assets_dir_on_disk = None # Keep it None
+                actual_img_assets_dir_on_disk = None
         elif not actual_img_assets_dir_on_disk: # pragma: no cover
             logger.error("Could not determine actual_img_assets_dir_on_disk. Image references may be incorrect or use placeholders.")
 
+        # Determine the correct ID to use for image link path construction.
+        id_for_image_links = None
+        if image_extraction_results and image_extraction_results.get('md_file_basename_for_assets'):
+            id_for_image_links = image_extraction_results['md_file_basename_for_assets']
+            logger.debug(f"Using 'md_file_basename_for_assets' ({id_for_image_links}) for image link construction.")
+        elif original_pdf_path:
+            id_for_image_links = os.path.splitext(os.path.basename(original_pdf_path))[0]
+            logger.warning(
+                f"Using re-derived filename base '{id_for_image_links}' for image links "
+                "as 'md_file_basename_for_assets' was missing from image_extraction_results."
+            )
+        else:
+            id_for_image_links = merged_metadata.get('unit_title_id', 'unknown_unit') # This is the "shortened" one
+            logger.warning(
+                f"Falling back to metadata 'unit_title_id' ({id_for_image_links}) for image links "
+                "due to missing reliable basename from image extraction or original path."
+            )
+
         body_with_linked_images = self.image_link_processor.process_image_links(
             body_with_sections,
-            merged_metadata.get('unit_title_id', 'unknown_unit'),
+            id_for_image_links, # This should now be the full base like "UNI0003_camb_as_physics_m1_l3"
             image_extraction_results,
             actual_img_assets_dir_on_disk
         )
         
-        # Final cleanup of the body
-        final_body = body_with_linked_images.strip() # Remove leading/trailing whitespace from body
+        final_body = body_with_linked_images.strip()
         
-        # Combine frontmatter and body
         if final_frontmatter_part and final_body:
-            # Ensure proper spacing between frontmatter and body
-            if not final_frontmatter_part.endswith('\n\n'): # Should be handled by split logic
+            if not final_frontmatter_part.endswith('\n\n'):
                 final_frontmatter_part = final_frontmatter_part.rstrip('\n') + '\n\n'
             fully_processed_content = final_frontmatter_part + final_body
-        elif final_frontmatter_part: # Only frontmatter, no body
+        elif final_frontmatter_part:
             fully_processed_content = final_frontmatter_part.rstrip('\n')
-        else: # Only body, no frontmatter (should not happen if ContentProcessor adds one)
+        else:
             fully_processed_content = final_body
 
-
-        # Ensure a single trailing newline for the whole document if it has content
         if fully_processed_content:
             fully_processed_content = fully_processed_content.rstrip('\n') + '\n'
         else: # pragma: no cover
-            fully_processed_content = "" # Ensure empty string if no content
+            fully_processed_content = ""
 
         logger.info("Completed markdown post-processing orchestration.")
         return fully_processed_content, merged_metadata
