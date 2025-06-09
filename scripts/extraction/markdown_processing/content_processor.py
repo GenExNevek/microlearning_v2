@@ -19,14 +19,14 @@ class ContentProcessor:
         
         # ***ENHANCED: Expanded pattern to handle various markdown code block variations***
         # Pattern to detect markdown code block: ```markdown|md|Markdown|MARKDOWN ... ``` (case-insensitive, non-greedy content)
-        self.markdown_code_block_pattern = r'^\s*```\s*(?:markdown|md)\s*\n(.*?)\n```\s*$'
+        self.markdown_code_block_pattern = r'^\s*```\s*(?:markdown|md|Markdown|MARKDOWN)\s*\n(.*?)\n```\s*$'
         
         # ***ENHANCED: More robust frontmatter patterns***
         # Order matters: check for frontmatter inside markdown block first.
         self.frontmatter_patterns = [
             # Frontmatter inside a markdown block: ```markdown\n---\n...\n---\n...```
             # Captures: (1) frontmatter_text, (2) body_after_frontmatter_in_block
-            r'^\s*```\s*(?:markdown|md)\s*\n\s*---\s*\n(.*?)\n---\s*\n*(.*?)\n```\s*$',
+            r'^\s*```\s*(?:markdown|md|Markdown|MARKDOWN)\s*\n\s*---\s*\n(.*?)\n---\s*\n*(.*?)\n```\s*$',
             # ***ENHANCED: Handle frontmatter with optional trailing newlines before closing ---***
             # Frontmatter at the very start: --- ... ---
             # Captures: (1) frontmatter_text, (2) body_after_frontmatter
@@ -60,7 +60,9 @@ class ContentProcessor:
 
         # Try to find and extract frontmatter using defined patterns
         for i, pattern in enumerate(self.frontmatter_patterns):
-            match = re.search(pattern, body_content, re.DOTALL | re.IGNORECASE)
+            # Use re.IGNORECASE for the markdown keyword part of the pattern
+            flags = re.DOTALL | re.IGNORECASE if "markdown|md|Markdown|MARKDOWN" in pattern else re.DOTALL
+            match = re.search(pattern, body_content, flags)
             if match:
                 llm_frontmatter_text = match.group(1).strip()
                 # ***ENHANCED: Handle patterns that may not have a body group (EOF case)***
@@ -72,7 +74,7 @@ class ContentProcessor:
                 break
         
         if not llm_frontmatter_text: 
-            # ***ENHANCED: Case-insensitive matching for markdown code blocks***
+            # Use re.IGNORECASE for the markdown keyword part of the pattern
             markdown_block_match = re.search(self.markdown_code_block_pattern, body_content, re.DOTALL | re.IGNORECASE)
             if markdown_block_match:
                 body_content = markdown_block_match.group(1).strip()

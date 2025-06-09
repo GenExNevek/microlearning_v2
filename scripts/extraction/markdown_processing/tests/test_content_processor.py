@@ -7,8 +7,6 @@ from unittest.mock import MagicMock
 # from scripts.extraction.markdown_processing.frontmatter_generator import FrontmatterGenerator
 
 class TestContentProcessor:
-    # TODO: Add tests for LLM output parsing, frontmatter extraction,
-    # body cleaning, and metadata merging.
 
     @pytest.fixture
     def mock_frontmatter_generator(self):
@@ -22,8 +20,9 @@ class TestContentProcessor:
         from scripts.extraction.markdown_processing.content_processor import ContentProcessor
         return ContentProcessor(mock_frontmatter_generator)
 
-    def test_process_llm_output_with_frontmatter_and_markdown_block(self, content_processor, mock_frontmatter_generator):
-        raw_llm_content = """```markdown
+    @pytest.mark.parametrize("markdown_keyword", ["markdown", "md", "Markdown", "MARKDOWN"])
+    def test_process_llm_output_with_frontmatter_and_markdown_block_variants(self, content_processor, mock_frontmatter_generator, markdown_keyword):
+        raw_llm_content = f"""```{markdown_keyword}
 ---
 unit-title: LLM Title
 subject: LLM Subject
@@ -38,23 +37,25 @@ More text.
         processed_content, merged_metadata = content_processor.process_llm_output(raw_llm_content, base_metadata)
         
         mock_frontmatter_generator.generate_frontmatter.assert_called_once()
-        # Check that the merged metadata was passed to the generator
         args_passed_to_fg = mock_frontmatter_generator.generate_frontmatter.call_args[0][0]
         assert args_passed_to_fg['unit_title'] == "LLM Title"
         assert args_passed_to_fg['subject'] == "LLM Subject"
-        assert args_passed_to_fg['unit_id'] == "U1" # from base
-        assert args_passed_to_fg['phase'] == "AS" # from base
+        assert args_passed_to_fg['unit_id'] == "U1" 
+        assert args_passed_to_fg['phase'] == "AS"
 
         assert "mocked_unit_title: \"LLM Title\"" in processed_content
         assert "mocked_subject: \"LLM Subject\"" in processed_content
         assert "This is the main body content." in processed_content
         assert "## A heading" in processed_content
-        assert "```markdown" not in processed_content.split("---", 2)[-1] # Check body part
-        assert not processed_content.split("---", 2)[-1].strip().startswith("---") # Ensure LLM frontmatter removed from body
+        assert f"```{markdown_keyword}" not in processed_content.split("---", 2)[-1] 
+        assert not processed_content.split("---", 2)[-1].strip().startswith("---") 
 
         assert merged_metadata['unit_title'] == "LLM Title"
         assert merged_metadata['subject'] == "LLM Subject"
         assert merged_metadata['unit_id'] == "U1"
+        # Reset mock for next parameterized call
+        mock_frontmatter_generator.generate_frontmatter.reset_mock()
+
 
     def test_process_llm_output_with_only_frontmatter_no_block(self, content_processor, mock_frontmatter_generator):
         raw_llm_content = """---
@@ -71,21 +72,24 @@ Body directly after frontmatter.
         assert merged_metadata['unit_title'] == "Another LLM Title"
         assert merged_metadata['unit_id'] == "U2"
 
-    def test_process_llm_output_only_markdown_block_no_frontmatter(self, content_processor, mock_frontmatter_generator):
-        raw_llm_content = """```markdown
+    @pytest.mark.parametrize("markdown_keyword", ["markdown", "md", "Markdown", "MARKDOWN"])
+    def test_process_llm_output_only_markdown_block_no_frontmatter_variants(self, content_processor, mock_frontmatter_generator, markdown_keyword):
+        raw_llm_content = f"""```{markdown_keyword}
 Just body content inside a markdown block.
 No frontmatter here.
 ```"""
         base_metadata = {'unit_title': 'Base Title', 'subject': 'Base Subject'}
         processed_content, merged_metadata = content_processor.process_llm_output(raw_llm_content, base_metadata)
 
-        assert "mocked_unit_title: \"Base Title\"" in processed_content # From base metadata
-        assert "mocked_subject: \"Base Subject\"" in processed_content # From base metadata
+        assert "mocked_unit_title: \"Base Title\"" in processed_content 
+        assert "mocked_subject: \"Base Subject\"" in processed_content 
         assert "Just body content inside a markdown block." in processed_content
         assert "No frontmatter here." in processed_content
-        assert "```markdown" not in processed_content.split("---", 2)[-1]
+        assert f"```{markdown_keyword}" not in processed_content.split("---", 2)[-1]
 
-        assert merged_metadata['unit_title'] == "Base Title" # Unchanged
+        assert merged_metadata['unit_title'] == "Base Title" 
+        mock_frontmatter_generator.generate_frontmatter.reset_mock()
+
 
     def test_process_llm_output_plain_content_no_frontmatter_no_block(self, content_processor, mock_frontmatter_generator):
         raw_llm_content = "This is plain content.\nNo special formatting."
@@ -106,27 +110,60 @@ Body content.
         base_metadata = {'unit_title': 'Base Title', 'subject': 'Base Subject'}
         processed_content, merged_metadata = content_processor.process_llm_output(raw_llm_content, base_metadata)
         
-        # LLM's unit-title is a valid string, so it should be used.
-        # LLM's subject is not a string, so base_metadata's subject should be used.
-        assert "mocked_unit_title: \"Malformed Title\"" in processed_content # CORRECTED ASSERTION
-        assert "mocked_subject: \"Base Subject\"" in processed_content       # CORRECTED ASSERTION (was already correct based on fix)
+        assert "mocked_unit_title: \"Malformed Title\"" in processed_content 
+        assert "mocked_subject: \"Base Subject\"" in processed_content        
         assert "Body content." in processed_content
         
-        # Merged metadata should reflect the attempt for unit-title, 
-        # but subject should have fallen back to base.
         assert merged_metadata['unit_title'] == "Malformed Title" 
-        assert merged_metadata['subject'] == "Base Subject" # CORRECTED ASSERTION
+        assert merged_metadata['subject'] == "Base Subject" 
         
 
     def test_process_llm_output_empty_body_after_frontmatter(self, content_processor, mock_frontmatter_generator):
         raw_llm_content = """---
 unit-title: Title Only
 ---
-""" # Empty body
+""" 
         base_metadata = {}
         processed_content, merged_metadata = content_processor.process_llm_output(raw_llm_content, base_metadata)
         
         assert "mocked_unit_title: \"Title Only\"" in processed_content
-        # Check that the content ends with the frontmatter closing "---" and not double newlines if body is empty
-        assert processed_content.strip().endswith("---")
+        # Check that the content ends with the frontmatter closing "---" 
+        # and not double newlines if body is empty
+        # The ContentProcessor adds "\n\n" separator if body_content is not empty.
+        # If body_content is empty, final_frontmatter_str is returned directly.
+        assert processed_content.strip() == "---\nmocked_unit_title: \"Title Only\"\nmocked_subject: \"DefaultSub\"\n---"
         assert len(processed_content.split("---",2)[-1].strip()) == 0
+
+    def test_frontmatter_eof_case(self, content_processor, mock_frontmatter_generator):
+        raw_llm_content = """---
+unit-title: EOF Title
+subject: EOF Subject
+---""" # No newline after final ---
+        base_metadata = {'unit_id': 'U-EOF'}
+        processed_content, merged_metadata = content_processor.process_llm_output(raw_llm_content, base_metadata)
+
+        assert "mocked_unit_title: \"EOF Title\"" in processed_content
+        assert "mocked_subject: \"EOF Subject\"" in processed_content
+        assert merged_metadata['unit_title'] == "EOF Title"
+        assert merged_metadata['subject'] == "EOF Subject"
+        # Body should be empty
+        body_part = processed_content.split("---", 2)[-1].strip()
+        assert body_part == ""
+
+    def test_frontmatter_in_markdown_block_eof_case(self, content_processor, mock_frontmatter_generator):
+        raw_llm_content = """```markdown
+---
+unit-title: Block EOF Title
+subject: Block EOF Subject
+---
+```""" # No body content after frontmatter inside block
+        base_metadata = {'unit_id': 'U-BlockEOF'}
+        processed_content, merged_metadata = content_processor.process_llm_output(raw_llm_content, base_metadata)
+
+        assert "mocked_unit_title: \"Block EOF Title\"" in processed_content
+        assert "mocked_subject: \"Block EOF Subject\"" in processed_content
+        assert merged_metadata['unit_title'] == "Block EOF Title"
+        assert merged_metadata['subject'] == "Block EOF Subject"
+        body_part = processed_content.split("---", 2)[-1].strip()
+        assert body_part == ""
+        assert "```" not in body_part

@@ -1,3 +1,4 @@
+
 # scripts/extraction/markdown_processing/section_marker_processor.py
 
 """Module for validating and injecting required section markers in markdown."""
@@ -79,30 +80,48 @@ class SectionMarkerProcessor:
             ***FIXED: Use efficient match_obj.start()/end() instead of find()***
             Efficiently determine proper spacing using match object position information.
             """
-            marker_text = match_obj.group(2)
-            marker_start = match_obj.start()
-            marker_end = match_obj.end()
+            marker_text = match_obj.group(2) # The marker itself e.g. <!-- SECTION: ... -->
+            # Original surrounding whitespace: group(1) is before, group(3) is after
+            
+            marker_start_pos = match_obj.start(2) # Start of the marker itself
+            marker_end_pos = match_obj.end(2)     # End of the marker itself
             content_length = len(match_obj.string)
             
-            # Determine if we're at the very start or end of content
-            is_at_start = marker_start == 0
-            is_at_end = marker_end == content_length
+            # Determine if we're at the very start or end of content based on the marker's position
+            # This needs to consider the original match boundaries (including whitespace)
+            # to correctly assess if the marker is truly at the start/end of the *entire content string*.
             
-            # ***ENHANCED: More sophisticated spacing logic***
-            if is_at_start and is_at_end:
-                # Marker is the only content
-                return marker_text
-            elif is_at_start:
-                # Marker at start of content
-                return f"{marker_text}\n\n"
-            elif is_at_end:
-                # Marker at end of content
-                return f"\n\n{marker_text}"
-            else:
-                # Marker in middle of content
-                return f"\n\n{marker_text}\n\n"
+            # A simpler approach: check character before marker_start_pos and after marker_end_pos
+            # within the full string.
+            
+            pre_newlines = "\n\n"
+            post_newlines = "\n\n"
+
+            # Check if marker is at the very beginning of the string
+            # We look at match_obj.start(0) which is the start of the whole match (including leading whitespace)
+            if match_obj.start(0) == 0:
+                pre_newlines = ""
+            
+            # Check if marker is at the very end of the string
+            # We look at match_obj.end(0) which is the end of the whole match (including trailing whitespace)
+            if match_obj.end(0) == content_length:
+                post_newlines = "\n" # Typically one newline at EOF is fine, or "" if it's the only content.
+                                     # Let's aim for consistency: if it's the only thing, no newlines.
+                                     # If it's at end but not start, then \n\n before, and nothing after.
+                                     # The strip() later will handle final EOF newlines.
+                if pre_newlines == "": # Only content is the marker
+                    post_newlines = ""
+                else:
+                    post_newlines = "" # Marker is at end, but not start.
+
+            return f"{pre_newlines}{marker_text}{post_newlines}"
+
 
         # Apply spacing normalisation to all section markers
+        # This regex captures:
+        # group(1): optional whitespace before the marker
+        # group(2): the marker itself
+        # group(3): optional whitespace after the marker
         processed_content = re.sub(r'(\s*)(<!-- SECTION: .*? -->)(\s*)',
                                    replace_marker_spacing,
                                    processed_content, flags=re.DOTALL)
@@ -112,15 +131,10 @@ class SectionMarkerProcessor:
         # Allow up to triple newlines for intentional spacing, but remove more than that
         processed_content = re.sub(r'\n{4,}', '\n\n\n', processed_content)
         
-        # ***ENHANCED: Preserve leading/trailing whitespace more intelligently***
-        # Only strip if there are excessive leading/trailing newlines
-        if processed_content.startswith('\n\n\n'):
-            processed_content = processed_content.lstrip('\n')
-        if processed_content.endswith('\n\n\n\n'):
-            processed_content = processed_content.rstrip('\n') + '\n'
-        
-        # Final safety strip to ensure clean boundaries
+        # Strip leading/trailing whitespace, but ensure a single trailing newline if content exists
         processed_content = processed_content.strip()
+        if processed_content:
+            processed_content += '\n'
         
         logger.info("Finished processing section markers.")
         return processed_content
