@@ -12,7 +12,7 @@ import logging
 from typing import Dict, Optional, Any, Tuple
 
 from ...config import settings, extraction_prompt # Relative import for settings and prompt
-from ..image_extractor import ImageExtractor # From parent package
+from ..image_processing.image_extractor import ImageExtractor # From parent package
 from ..pdf_reader import PDFReader # From parent package, for type hint
 
 # Imports for specialist components from the current package

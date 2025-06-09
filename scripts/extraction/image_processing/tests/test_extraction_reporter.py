@@ -11,8 +11,8 @@ import time
 from typing import Dict, Any
 
 # Import the ExtractionReporter and ImageIssueType
-from ..extraction_reporter import ExtractionReporter
-from ...utils.image_validation import ImageIssueType # Adjust import as necessary
+from ...image_processing.extraction_reporter import ExtractionReporter
+from ....utils.image_validation import ImageIssueType # Adjust import as necessary
 
 # Mock configuration
 MOCK_CONFIG = {

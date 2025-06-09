@@ -11,7 +11,7 @@ from typing import Dict, Any, Tuple
 
 # Assuming utils is in a parent directory
 # from ..utils.image_validation import ImageValidator, ImageIssueType # Original
-from ..utils.image_validation import ImageValidator, ImageIssueType # Adjusted import based on typical structure
+from ...utils.image_validation import ImageValidator, ImageIssueType # Adjusted import based on typical structure
 
 # Rest of the file content is the same as generated before.
 # The import path will depend on the exact structure of the 'utils' directory relative to 'extraction'.

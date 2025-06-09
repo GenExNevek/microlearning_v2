@@ -6,7 +6,7 @@ import logging
 import time
 import os
 from typing import Dict, List, Any, Optional
-from ..utils.image_validation import ImageIssueType # Assuming utils is a sibling or parent directory
+from ...utils.image_validation import ImageIssueType # Assuming utils is a sibling or parent directory
 
 logger = logging.getLogger(__name__)
 

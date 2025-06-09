@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 from typing import Dict, Any
 
 # Import the RetryCoordinator
-from ..retry_coordinator import RetryCoordinator
+from ...image_processing.retry_coordinator import RetryCoordinator
 
 # Import real strategy classes before patching overrides them
 from .mock_strategies import (

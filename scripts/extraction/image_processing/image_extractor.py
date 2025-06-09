@@ -9,8 +9,8 @@ import time
 from typing import Dict, List, Optional, Tuple, Any
 
 # Import refactored components
-from ..config import settings
-from ..utils.image_validation import ImageValidator, ImageIssueType # Keep for config check/init
+from ...config import settings
+from ...utils.image_validation import ImageValidator, ImageIssueType # Keep for config check/init
 from .extraction_strategies import (
     StandardExtractionStrategy,
     AlternateColorspaceExtractionStrategy,

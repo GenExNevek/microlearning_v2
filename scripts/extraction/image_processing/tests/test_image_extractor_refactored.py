@@ -15,9 +15,9 @@ from typing import Dict, Any, List, Tuple
 
 # Import the original classes for type hinting or reference if needed.
 # These are NOT the patch targets for ImageExtractor's direct dependencies anymore.
-from scripts.extraction.extraction_reporter import ExtractionReporter as OriginalExtractionReporter
-from scripts.extraction.image_processor import ImageProcessor as OriginalImageProcessor
-from scripts.extraction.retry_coordinator import RetryCoordinator as OriginalRetryCoordinator
+from scripts.extraction.image_processing.extraction_reporter import ExtractionReporter as OriginalExtractionReporter
+from scripts.extraction.image_processing.image_processor import ImageProcessor as OriginalImageProcessor
+from scripts.extraction.image_processing.retry_coordinator import RetryCoordinator as OriginalRetryCoordinator
 from scripts.config import settings as original_settings
 from scripts.utils.image_validation import ImageValidator as OriginalImageValidator
 
@@ -299,7 +299,7 @@ class TestImageExtractorRefactored(unittest.TestCase):
         MockImageProcessorClass.return_value = self.mock_processor
         MockRetryCoordinatorClass.return_value = self.mock_coordinator
 
-        from scripts.extraction.image_extractor import ImageExtractor 
+        from scripts.extraction.image_processing.image_extractor import ImageExtractor 
         
         extractor = ImageExtractor()
         
@@ -381,7 +381,7 @@ class TestImageExtractorRefactored(unittest.TestCase):
         MockImageProcessorClass.return_value = self.mock_processor
         MockRetryCoordinatorClass.return_value = self.mock_coordinator
 
-        from scripts.extraction.image_extractor import ImageExtractor
+        from scripts.extraction.image_processing.image_extractor import ImageExtractor
         extractor = ImageExtractor()
         
         self.assertIs(extractor.reporter, self.mock_reporter)
@@ -460,7 +460,7 @@ class TestImageExtractorRefactored(unittest.TestCase):
         MockImageProcessorClass.return_value = self.mock_processor
         MockRetryCoordinatorClass.return_value = self.mock_coordinator
 
-        from scripts.extraction.image_extractor import ImageExtractor
+        from scripts.extraction.image_processing.image_extractor import ImageExtractor
         extractor = ImageExtractor()
 
         self.assertIs(extractor.reporter, self.mock_reporter)
@@ -507,7 +507,7 @@ class TestImageExtractorRefactored(unittest.TestCase):
         
         mock_makedirs.side_effect = OSError("Mock mkdir failed")
 
-        from scripts.extraction.image_extractor import ImageExtractor
+        from scripts.extraction.image_processing.image_extractor import ImageExtractor
         extractor = ImageExtractor()
 
         self.assertIs(extractor.reporter, self.mock_reporter)
