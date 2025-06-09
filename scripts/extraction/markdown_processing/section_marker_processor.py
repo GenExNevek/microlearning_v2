@@ -29,12 +29,12 @@ class SectionMarkerProcessor:
 
     def __init__(self, required_sections: Optional[List[str]] = None):
         self.required_sections = required_sections if required_sections is not None else self.DEFAULT_REQUIRED_SECTIONS
-        logger.debug(f"SectionMarkerProcessor initialized with required sections: {self.required_sections}")
+        logger.debug(f"SectionMarkerProcessor initialised with required sections: {self.required_sections}")
 
     def process_sections(self, content: str) -> str:
         """
         Ensures all required section markers are present in the content.
-        Adds missing markers and standardizes spacing around them.
+        Adds missing markers and standardises spacing around them.
         """
         logger.info("Processing section markers.")
         processed_content = content
@@ -71,20 +71,56 @@ class SectionMarkerProcessor:
             else:
                 logger.debug(f"Section marker for {section_name} already present.")
 
-        # Standardize spacing around all section markers (existing or newly added)
+        # ***ENHANCED: Improved spacing standardisation using match object methods***
+        # Standardise spacing around all section markers (existing or newly added)
         # Ensure two newlines before and after each marker.
-        # This regex also handles cases where markers might be at the very start/end of content.
         def replace_marker_spacing(match_obj):
-            pre_newlines = "\n\n" if match_obj.string.find(match_obj.group(2)) > 0 else ""
-            post_newlines = "\n\n" if match_obj.string.find(match_obj.group(2)) + len(match_obj.group(2)) < len(match_obj.string) else "\n" # Single if at very end
-            return f"{pre_newlines}{match_obj.group(2)}{post_newlines}"
+            """
+            ***FIXED: Use efficient match_obj.start()/end() instead of find()***
+            Efficiently determine proper spacing using match object position information.
+            """
+            marker_text = match_obj.group(2)
+            marker_start = match_obj.start()
+            marker_end = match_obj.end()
+            content_length = len(match_obj.string)
+            
+            # Determine if we're at the very start or end of content
+            is_at_start = marker_start == 0
+            is_at_end = marker_end == content_length
+            
+            # ***ENHANCED: More sophisticated spacing logic***
+            if is_at_start and is_at_end:
+                # Marker is the only content
+                return marker_text
+            elif is_at_start:
+                # Marker at start of content
+                return f"{marker_text}\n\n"
+            elif is_at_end:
+                # Marker at end of content
+                return f"\n\n{marker_text}"
+            else:
+                # Marker in middle of content
+                return f"\n\n{marker_text}\n\n"
 
+        # Apply spacing normalisation to all section markers
         processed_content = re.sub(r'(\s*)(<!-- SECTION: .*? -->)(\s*)',
                                    replace_marker_spacing,
                                    processed_content, flags=re.DOTALL)
         
+        # ***ENHANCED: More sophisticated cleanup***
         # Clean up excessive newlines that might result from additions/substitutions
-        processed_content = re.sub(r'\n{3,}', '\n\n', processed_content).strip()
+        # Allow up to triple newlines for intentional spacing, but remove more than that
+        processed_content = re.sub(r'\n{4,}', '\n\n\n', processed_content)
+        
+        # ***ENHANCED: Preserve leading/trailing whitespace more intelligently***
+        # Only strip if there are excessive leading/trailing newlines
+        if processed_content.startswith('\n\n\n'):
+            processed_content = processed_content.lstrip('\n')
+        if processed_content.endswith('\n\n\n\n'):
+            processed_content = processed_content.rstrip('\n') + '\n'
+        
+        # Final safety strip to ensure clean boundaries
+        processed_content = processed_content.strip()
         
         logger.info("Finished processing section markers.")
         return processed_content
