@@ -12,7 +12,7 @@ from datetime import datetime
 
 from ...config import settings
 from ..pdf_processing import PDFReader
-from ..markdown_formatter import MarkdownFormatter
+from ..markdown_processing import MarkdownFormatter
 from ..output_management import FileWriter, DirectoryManager
 from ...utils.image_validation import ImageIssueType
 
