@@ -41,14 +41,10 @@ class BatchProcessor:
         """
         logger.info(f"Processing single file: {pdf_path}")
         
-        # DirectoryManager resolves the final target path based on source and configured target structure
-        # The second argument to orchestrator.transform_pdf_to_markdown is a suggestion;
-        # the orchestrator itself might refine it or use DirectoryManager.resolve_target_path.
-        # For simplicity, we can let the orchestrator handle the final target path resolution
-        # by passing a "nominal" target path.
-        # Let's use the DirectoryManager here to get the correct target path suggestion.
+        # Get the correct target path using DirectoryManager
         target_markdown_path = self.directory_manager.resolve_target_path(pdf_path)
         
+        # Pass the resolved path to the orchestrator, which will use it directly
         success = self.orchestrator.transform_pdf_to_markdown(pdf_path, target_markdown_path)
         
         return {
@@ -68,7 +64,7 @@ class BatchProcessor:
             source_directory_path: Path to the directory containing PDF files.
 
         Returns:
-            A dictionary summarizing the results.
+            A dictionary summarising the results.
         """
         abs_source_directory_path = os.path.abspath(source_directory_path)
         logger.info(f"Processing directory: {abs_source_directory_path}")
@@ -116,55 +112,19 @@ class BatchProcessor:
             batch_id: The ID of the batch (subdirectory name) or None/"ALL".
 
         Returns:
-            A dictionary summarizing the results.
+            A dictionary summarising the results.
         """
-        if not batch_id or batch_id.upper() == 'ALL':
-            logger.info("Processing all batches in PDF_SOURCE_DIR.")
+        if batch_id is None or batch_id.upper() == "ALL":
+            logger.info("Processing all PDF files in the configured source directory.")
             return self.process_directory(settings.PDF_SOURCE_DIR)
         else:
             batch_directory = os.path.join(settings.PDF_SOURCE_DIR, batch_id)
-            if os.path.isdir(batch_directory):
-                logger.info(f"Processing batch ID '{batch_id}' from directory: {batch_directory}")
-                return self.process_directory(batch_directory)
-            else:
-                err_msg = f"Directory not found for batch ID '{batch_id}' at {batch_directory}"
-                logger.error(err_msg)
-                return {'success_count': 0, 'failure_count': 0, 'failures': [err_msg]}
-    
-    def process_by_course_id(self, course_id_prefix: str) -> Dict[str, Any]:
-        """Processes PDFs in a directory starting with the given course ID prefix."""
-        logger.info(f"Attempting to process by course ID prefix: {course_id_prefix}")
-        try:
-            for item in os.listdir(settings.PDF_SOURCE_DIR):
-                item_path = os.path.join(settings.PDF_SOURCE_DIR, item)
-                if os.path.isdir(item_path) and item.lower().startswith(course_id_prefix.lower()):
-                    logger.info(f"Found and processing course directory: {item_path}")
-                    return self.process_directory(item_path)
-            
-            err_msg = f"Course directory starting with '{course_id_prefix}' not found in {settings.PDF_SOURCE_DIR}"
-            logger.error(err_msg)
-            return {'success_count': 0, 'failure_count': 1, 'failures': [err_msg]}
-        except FileNotFoundError:
-            err_msg = f"PDF_SOURCE_DIR not found: {settings.PDF_SOURCE_DIR}"
-            logger.error(err_msg)
-            return {'success_count': 0, 'failure_count': 1, 'failures': [err_msg]}
-
-
-    def process_by_module_id(self, module_id_prefix: str) -> Dict[str, Any]:
-        """Processes PDFs in a directory (anywhere under PDF_SOURCE_DIR) starting with the module ID prefix."""
-        logger.info(f"Attempting to process by module ID prefix: {module_id_prefix}")
-        try:
-            for root, dirs, _ in os.walk(settings.PDF_SOURCE_DIR):
-                for dir_name in dirs:
-                    if dir_name.lower().startswith(module_id_prefix.lower()):
-                        module_path = os.path.join(root, dir_name)
-                        logger.info(f"Found and processing module directory: {module_path}")
-                        return self.process_directory(module_path)
-            
-            err_msg = f"Module directory starting with '{module_id_prefix}' not found under {settings.PDF_SOURCE_DIR}"
-            logger.error(err_msg)
-            return {'success_count': 0, 'failure_count': 1, 'failures': [err_msg]}
-        except FileNotFoundError:
-            err_msg = f"PDF_SOURCE_DIR not found: {settings.PDF_SOURCE_DIR}"
-            logger.error(err_msg)
-            return {'success_count': 0, 'failure_count': 1, 'failures': [err_msg]}
+            if not os.path.isdir(batch_directory):
+                logger.error(f"Batch directory does not exist: {batch_directory}")
+                return {
+                    'success_count': 0,
+                    'failure_count': 0,
+                    'failures': [f"Batch directory not found: {batch_directory}"]
+                }
+            logger.info(f"Processing batch '{batch_id}' from directory: {batch_directory}")
+            return self.process_directory(batch_directory)
