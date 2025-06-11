@@ -57,6 +57,28 @@ IMAGE_EXTRACTION_CONFIG = {
     "save_report_to_file": True    # Whether the reporter should save the .md report
 }
 
+# === NEW CONFIGURATION SECTIONS ===
+
+# -- Image Analysis and Filtering --
+IMAGE_FILTER_CONFIG = {
+    'FILTER_BLANK_IMAGES': True,
+    'FILTER_UI_ELEMENTS': True,
+    'MIN_MEANINGFUL_IMAGE_WIDTH': 50,
+    'MIN_MEANINGFUL_IMAGE_HEIGHT': 50,
+    'MAX_ICON_AREA_PX': 4096,  # Area of a 64x64 image
+}
+
+# -- Correlation Engine --
+CORRELATION_CONFIG = {
+    'REQUIRE_MINIMUM_CONFIDENCE': 0.4,
+    'ENABLE_FALLBACK_SEQUENTIAL': True,
+    # Weights for different matching strategies
+    'SEMANTIC_MATCH_WEIGHT': 0.5,
+    'CONTEXT_MATCH_WEIGHT': 0.3,
+    'POSITION_PROXIMITY_WEIGHT': 0.15,
+    'VISUAL_SIMILARITY_WEIGHT': 0.05
+}
+
 # Ensure .env loading messages are useful
 # print(f"Attempting to load .env from: {ENV_PATH}")
 # print(f".env file exists: {os.path.exists(ENV_PATH)}")
