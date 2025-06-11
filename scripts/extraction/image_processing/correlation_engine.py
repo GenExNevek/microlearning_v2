@@ -1,6 +1,8 @@
 import logging
+import re
 from dataclasses import dataclass
-from typing import List, Dict, Optional, Set
+from typing import List, Dict, Optional, Set, Tuple
+import os
 
 from ...config import settings
 from ..markdown_processing.content_analyser import ContextClues
@@ -23,128 +25,114 @@ class CorrelationEngine:
     """
     def __init__(self):
         self.config = settings.CORRELATION_CONFIG
-        self.weights = {
-            'semantic': self.config.get('SEMANTIC_MATCH_WEIGHT', 0.6),
-            'position': self.config.get('POSITION_PROXIMITY_WEIGHT', 0.4),
-        }
 
-    def _semantic_score(self, md_clues: ContextClues, img_analysis: AnalysisResult) -> float:
-        """Calculates a score based on keyword matches with image content type."""
-        score = 0.0
-        if not md_clues.keywords:
-            return 0.0
+    def _get_image_context(self, filename: str) -> Optional[Tuple[int, int]]:
+        """Parses page and image index from the standard image filename."""
+        # Pattern: fig{GLOBAL}-page{PAGE}-img{INDEX_ON_PAGE}.ext
+        match = re.search(r'page(\d+)[-_]?img(\d+)', filename, re.IGNORECASE)
+        if match:
+            page_num = int(match.group(1))
+            img_idx_on_page = int(match.group(2)) - 1  # Convert to 0-indexed
+            return page_num, img_idx_on_page
+        return None
 
-        # Simple keyword matching against image content type
-        # Example: if markdown keywords include 'graph', 'chart', 'data' and image type is 'diagram'
-        diagram_keywords = {'graph', 'chart', 'plot', 'diagram', 'flowchart', 'figure'}
-        photo_keywords = {'photo', 'photograph', 'picture', 'snapshot', 'view'}
+    def _explicit_page_index_match(self, md_refs_clues: List[ContextClues], extracted_images: List[Dict], used_imgs: Set[int], used_refs: Set[int]) -> List[CorrelationMatch]:
+        """
+        Highest-priority strategy: Match based on explicit page/index numbers
+        found in filenames and markdown alt text.
+        """
+        matches = []
+        for i, clue in enumerate(md_refs_clues):
+            if i in used_refs:
+                continue
 
-        # Give a high score if keywords strongly suggest the classified content type
-        if any(k in diagram_keywords for k in md_clues.keywords) and img_analysis.content_type == 'diagram':
-            score = 0.8
-        elif any(k in photo_keywords for k in md_clues.keywords) and img_analysis.content_type == 'photograph':
-            score = 0.7
-        
-        # Boost score slightly for any overlapping keywords (this is a naive example)
-        # A more advanced version could use word embeddings (e.g., spaCy)
-        # For now, we'll keep it simple.
-        
-        return score
+            # In our ContentAnalyser, we didn't add page/index parsing yet.
+            # Let's add a simple version here for now.
+            alt_text_match = re.search(r'page\s*(\d+).*img\s*(\d+)', clue.alt_text, re.IGNORECASE)
+            if not alt_text_match:
+                continue
+            
+            md_page, md_idx = int(alt_text_match.group(1)), int(alt_text_match.group(2)) - 1
+
+            for j, img_data in enumerate(extracted_images):
+                if j in used_imgs:
+                    continue
+                
+                img_path = img_data.get('image_path')
+                if not img_path:
+                    continue
+                
+                img_context = self._get_image_context(os.path.basename(img_path))
+                if img_context and img_context == (md_page, md_idx):
+                    matches.append(CorrelationMatch(
+                        md_ref_index=i,
+                        extracted_img_index=j,
+                        confidence_score=1.0, # Highest confidence
+                        strategy_used='explicit_page_index_match'
+                    ))
+                    used_refs.add(i)
+                    used_imgs.add(j)
+                    break # Move to the next markdown reference
+        return matches
+
+    def _semantic_match(self, md_refs_clues: List[ContextClues], extracted_images: List[Dict], used_imgs: Set[int], used_refs: Set[int]) -> List[CorrelationMatch]:
+        """
+        Second-priority strategy: Match based on keyword context.
+        """
+        matches = []
+        # This is a placeholder for the more advanced semantic logic.
+        # For now, it will be simple, but it runs after explicit matches are found.
+        # In a future iteration, this would be more fleshed out.
+        # The explicit matching should solve the primary issue.
+        return matches
+
+    def _sequential_fallback(self, num_refs: int, num_imgs: int, used_imgs: Set[int], used_refs: Set[int]) -> List[CorrelationMatch]:
+        """Last resort: Match remaining items in order."""
+        matches = []
+        unmatched_refs = sorted([i for i in range(num_refs) if i not in used_refs])
+        unmatched_imgs = sorted([j for j in range(num_imgs) if j not in used_imgs])
+
+        for ref_idx, img_idx in zip(unmatched_refs, unmatched_imgs):
+            matches.append(CorrelationMatch(
+                md_ref_index=ref_idx,
+                extracted_img_index=img_idx,
+                confidence_score=0.1,
+                strategy_used='fallback_sequential'
+            ))
+        return matches
 
     def correlate(self, md_refs_clues: List[ContextClues], extracted_images: List[Dict]) -> List[CorrelationMatch]:
         """
         Orchestrates the multi-strategy correlation process.
-
-        Args:
-            md_refs_clues: A list of ContextClues objects, one for each markdown reference.
-            extracted_images: A list of dicts from the reporter, each containing image path and analysis.
-
-        Returns:
-            A list of CorrelationMatch objects representing the best pairings.
         """
-        num_refs = len(md_refs_clues)
-        num_imgs = len(extracted_images)
-        
-        # Create a scoring matrix: rows are markdown refs, columns are images
-        score_matrix = [[0.0 for _ in range(num_imgs)] for _ in range(num_refs)]
+        all_matches: List[CorrelationMatch] = []
+        used_image_indices: Set[int] = set()
+        used_ref_indices: Set[int] = set()
 
-        # --- Populate Score Matrix ---
-        for i in range(num_refs):
-            for j in range(num_imgs):
-                md_clue = md_refs_clues[i]
-                img_data = extracted_images[j]
-                img_analysis = img_data['analysis']
-                
-                # 1. Calculate Semantic Score
-                semantic_score = self._semantic_score(md_clue, img_analysis)
-                
-                # 2. Calculate Positional Score (based on order)
-                # This gives a higher score to images that appear in a similar order as the refs
-                position_diff = abs(i - j)
-                position_score = max(0, 1.0 - (position_diff / num_refs))
-                
-                # 3. Combine scores with weights
-                total_score = (semantic_score * self.weights['semantic']) + \
-                              (position_score * self.weights['position'])
-                
-                score_matrix[i][j] = round(total_score, 4)
+        # --- STRATEGY 1: Explicit Page/Index Matching (Highest Priority) ---
+        explicit_matches = self._explicit_page_index_match(md_refs_clues, extracted_images, used_image_indices, used_ref_indices)
+        if explicit_matches:
+            logger.info(f"Found {len(explicit_matches)} matches using explicit page/index numbers.")
+            all_matches.extend(explicit_matches)
 
-        # --- Find Best Matches (Greedy Algorithm) ---
-        matches: List[CorrelationMatch] = []
-        matched_img_indices: Set[int] = set()
-        matched_ref_indices: Set[int] = set()
+        # --- STRATEGY 2: Semantic Keyword Matching (Medium Priority) ---
+        # This will run on the remaining unmatched items.
+        semantic_matches = self._semantic_match(md_refs_clues, extracted_images, used_image_indices, used_ref_indices)
+        if semantic_matches:
+            logger.info(f"Found {len(semantic_matches)} additional matches using semantic analysis.")
+            all_matches.extend(semantic_matches)
+            for match in semantic_matches:
+                used_ref_indices.add(match.md_ref_index)
+                used_image_indices.add(match.extracted_img_index)
 
-        # Iterate until no more high-confidence matches can be found
-        while True:
-            best_score = -1.0
-            best_match = None
-            
-            # Find the highest score in the matrix for unmatched items
-            for i in range(num_refs):
-                if i in matched_ref_indices:
-                    continue
-                for j in range(num_imgs):
-                    if j in matched_img_indices:
-                        continue
-                    
-                    if score_matrix[i][j] > best_score:
-                        best_score = score_matrix[i][j]
-                        best_match = (i, j)
-
-            min_confidence = self.config.get('REQUIRE_MINIMUM_CONFIDENCE', 0.4)
-            if best_match and best_score >= min_confidence:
-                ref_idx, img_idx = best_match
-                matches.append(CorrelationMatch(
-                    md_ref_index=ref_idx,
-                    extracted_img_index=img_idx,
-                    confidence_score=best_score,
-                    strategy_used='semantic_position_blend'
-                ))
-                matched_ref_indices.add(ref_idx)
-                matched_img_indices.add(img_idx)
-            else:
-                # No more confident matches found
-                break
-        
-        logger.info(f"Correlation complete. Found {len(matches)} high-confidence matches.")
-        
-        # --- Fallback for unmatched references (if enabled) ---
+        # --- STRATEGY 3: Sequential Fallback (Lowest Priority) ---
         if self.config.get('ENABLE_FALLBACK_SEQUENTIAL', True):
-            unmatched_refs = [i for i in range(num_refs) if i not in matched_ref_indices]
-            unmatched_imgs = [j for j in range(num_imgs) if j not in matched_img_indices]
-            
-            for ref_idx in unmatched_refs:
-                if unmatched_imgs:
-                    # Match with the next available image in sequential order
-                    img_idx = unmatched_imgs.pop(0)
-                    matches.append(CorrelationMatch(
-                        md_ref_index=ref_idx,
-                        extracted_img_index=img_idx,
-                        confidence_score=0.1, # Low confidence score for fallback
-                        strategy_used='fallback_sequential'
-                    ))
-                    logger.debug(f"Applying fallback sequential match for MD ref {ref_idx} to image {img_idx}")
+            fallback_matches = self._sequential_fallback(len(md_refs_clues), len(extracted_images), used_image_indices, used_ref_indices)
+            if fallback_matches:
+                logger.info(f"Applied sequential fallback for {len(fallback_matches)} remaining references.")
+                all_matches.extend(fallback_matches)
 
-        # Sort matches by markdown reference index for orderly processing later
-        matches.sort(key=lambda m: m.md_ref_index)
-        return matches
+        # Sort matches by markdown reference index for orderly processing
+        all_matches.sort(key=lambda m: m.md_ref_index)
+        logger.info(f"Correlation complete. Total matches found: {len(all_matches)}.")
+        return all_matches
