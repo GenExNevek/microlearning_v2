@@ -1,4 +1,4 @@
-# scripts/extraction/extraction_reporter.py
+# scripts/extraction/image_processing/extraction_reporter.py
 
 """Handles reporting and tracking of image extraction results."""
 
@@ -14,7 +14,10 @@ from .image_analyser import AnalysisResult
 logger = logging.getLogger(__name__)
 
 class ExtractionReporter:
-    """Collects metrics, tracks problematic images, and generates reports."""
+    """Collects metrics, tracks problematic images, and generates reports.
+    
+    Enhanced with diagnostic mode support for detailed filtering analysis.
+    """
 
     def __init__(self, config: Dict[str, Any]):
         """Initialize the reporter with configuration."""
@@ -46,9 +49,19 @@ class ExtractionReporter:
                 'filtered_as_blank': 0,
                 'filtered_as_icon': 0,
                 'filtered_by_size': 0,
+                'filtered_as_decorative': 0,  # Added for diagnostic mode
                 'kept_diagrams': 0,
                 'kept_photos': 0,
                 'kept_unknown': 0,
+            },
+            # --- NEW (for diagnostic mode) ---
+            "diagnostic_stats": {
+                'would_be_filtered_count': 0,
+                'would_be_filtered_blank': 0,
+                'would_be_filtered_icon': 0,
+                'would_be_filtered_size': 0,
+                'would_be_filtered_decorative': 0,
+                'extraction_failures': 0,
             },
             # --- NEW (for Phase 4) ---
             "correlation_stats": {
@@ -88,17 +101,22 @@ class ExtractionReporter:
             self.metrics["filter_stats"]['filtered_as_blank'] += 1
         elif "dimensions" in reason.lower():
             self.metrics["filter_stats"]['filtered_by_size'] += 1
+        elif "decorative" in reason.lower() or "banner" in reason.lower():
+            self.metrics["filter_stats"]['filtered_as_decorative'] += 1
         
         logger.debug(f"Image filtered. Reason: {reason}. Details: {analysis.dimensions}, {analysis.content_type}")
 
-    def track_extraction_result(self, extraction_info: Dict, processing_result: Dict, analysis_result: Optional[AnalysisResult] = None):
+    def track_extraction_result(self, extraction_info: Dict, processing_result: Dict, analysis_result: Optional[AnalysisResult] = None, diagnostic_reason: Optional[str] = None):
         """
         Tracks the result of a single image extraction and processing pipeline.
+        
+        Enhanced with diagnostic mode support.
 
         Args:
             extraction_info: The info dict returned by RetryCoordinator.
             processing_result: The info dict returned by ImageProcessor (save/validate).
             analysis_result: The result from ImageAnalyser for kept images.
+            diagnostic_reason: Optional diagnostic reason from filter analysis.
         """
         self.metrics["attempted_extractions"] += 1
         self.metrics["total_extraction_duration"] += extraction_info.get('duration', 0.0)
@@ -110,6 +128,14 @@ class ExtractionReporter:
 
         if is_extracted:
             self.metrics["successful_extractions"] += 1
+            problem_details = {
+                'page': extraction_info.get('page', 'unknown'),
+                'index_on_page': extraction_info.get('index_on_page', 'unknown'),
+                'xref': extraction_info.get('xref', 'unknown'),
+                'extraction_info': extraction_info,
+                'validation_info': processing_result.get('validation_info', {}),
+                'diagnostic_reason': diagnostic_reason
+            }
 
             if is_saved_and_valid:
                 self.extracted_count += 1
@@ -127,44 +153,47 @@ class ExtractionReporter:
                         'image_path': processing_result.get('path'),
                         'analysis': analysis_result,
                         'page_num': extraction_info.get('page'),
-                        'xref': extraction_info.get('xref')
+                        'xref': extraction_info.get('xref'),
+                        'diagnostic_reason': diagnostic_reason
                     })
+                
+                # --- NEW: Track diagnostic information even for saved images ---
+                if diagnostic_reason and "[WOULD BE FILTERED]" in diagnostic_reason:
+                    self.metrics["diagnostic_stats"]['would_be_filtered_count'] += 1
+                    
+                    # Track specific filter types that would have been applied
+                    if "blank" in diagnostic_reason.lower():
+                        self.metrics["diagnostic_stats"]['would_be_filtered_blank'] += 1
+                    elif "icon" in diagnostic_reason.lower():
+                        self.metrics["diagnostic_stats"]['would_be_filtered_icon'] += 1
+                    elif "dimensions" in diagnostic_reason.lower():
+                        self.metrics["diagnostic_stats"]['would_be_filtered_size'] += 1
+                    elif "decorative" in diagnostic_reason.lower() or "banner" in diagnostic_reason.lower():
+                        self.metrics["diagnostic_stats"]['would_be_filtered_decorative'] += 1
+                    
+                    # In diagnostic mode, track as problematic for analysis purposes
+                    problem_details.update({
+                        'issue': f"Diagnostic: {diagnostic_reason}",
+                        'issue_type': 'diagnostic_would_filter'
+                    })
+                    self.problematic_images.append(problem_details)
                 # --- END NEW ---
+
             else: 
                 self.failed_count += 1
-                
                 current_issue_type_str = processing_result.get('issue_type')
-                is_actual_image_issue_type_failure = False
-                if current_issue_type_str:
-                    try:
-                        ImageIssueType(current_issue_type_str)
-                        is_actual_image_issue_type_failure = True
-                    except ValueError:
-                        pass 
-
-                if is_actual_image_issue_type_failure:
-                    self.metrics["validation_failures"] += 1
                 
+                if current_issue_type_str and current_issue_type_str not in self.metrics['issue_types']:
+                    self.metrics['issue_types'][current_issue_type_str] = 0
                 if current_issue_type_str:
-                    if current_issue_type_str not in self.metrics['issue_types']:
-                        self.metrics['issue_types'][current_issue_type_str] = 0
                     self.metrics['issue_types'][current_issue_type_str] += 1
-                else:
-                    current_issue_type_str = 'processing_failed'
-                    if current_issue_type_str not in self.metrics['issue_types']:
-                        self.metrics['issue_types'][current_issue_type_str] = 0
-                    self.metrics['issue_types'][current_issue_type_str] += 1
-
-                if not processing_result.get('filtered', False):
-                    self.problematic_images.append({
-                        'page': extraction_info.get('page', 'unknown'),
-                        'index_on_page': extraction_info.get('index_on_page', 'unknown'),
-                        'xref': extraction_info.get('xref', 'unknown'),
+                
+                if 'filtered' not in processing_result or not processing_result['filtered']:
+                    problem_details.update({
                         'issue': processing_result.get('issue', 'Processing or Validation failed'),
-                        'issue_type': current_issue_type_str,
-                        'extraction_info': extraction_info,
-                        'validation_info': processing_result.get('validation_info', {})
+                        'issue_type': current_issue_type_str
                     })
+                    self.problematic_images.append(problem_details)
                     self.errors.append(
                         f"Processing/Validation failed for image on page {extraction_info.get('page')}, "
                         f"index {extraction_info.get('index_on_page')}: {processing_result.get('issue')}"
@@ -173,9 +202,13 @@ class ExtractionReporter:
             if len(extraction_info.get('attempts', [])) > 1 and extraction_info['success']:
                  self.metrics['retry_successes'] += 1
         
-        else:
+        else: # Extraction itself failed
             self.metrics["failed_extractions"] += 1
             self.failed_count += 1
+            
+            # Track diagnostic information for extraction failures
+            if diagnostic_reason:
+                self.metrics["diagnostic_stats"]['extraction_failures'] += 1
             
             current_issue_type_str = extraction_info.get('issue_type', 'extraction_failed')
             if current_issue_type_str not in self.metrics['issue_types']:
@@ -189,6 +222,7 @@ class ExtractionReporter:
                 'issue': extraction_info.get('final_error', 'Extraction failed'),
                 'issue_type': current_issue_type_str,
                 'extraction_info': extraction_info,
+                'diagnostic_reason': diagnostic_reason
             })
             self.errors.append(
                 f"Extraction failed for image on page {extraction_info.get('page')}, "
@@ -228,21 +262,11 @@ class ExtractionReporter:
         report_text = self._generate_report_text(summary)
         summary['report_text'] = report_text
 
-        report_path = None
-        if output_dir:
-            os.makedirs(output_dir, exist_ok=True)
-            pdf_basename = os.path.splitext(os.path.basename(self.pdf_path or "report"))[0]
-            report_filename = f"image_extraction_report_{pdf_basename}_{int(time.time())}.md"
-            report_path = os.path.join(output_dir, report_filename)
-
-            try:
-                with open(report_path, "w", encoding="utf-8") as f:
-                    f.write(report_text)
+        # Save report to file if configured
+        if self.config.get('save_report_to_file', True) and output_dir:
+            report_path = self._save_report_to_file(report_text, output_dir)
+            if report_path:
                 summary["report_path"] = report_path
-                logger.info(f"Image extraction report saved to {report_path}")
-            except Exception as e:
-                logger.error(f"Failed to save extraction report to {report_path}: {str(e)}")
-                summary["report_save_error"] = str(e)
 
         success_status = "SUCCESSFUL" if summary['success'] else "PROBLEMATIC"
         logger.info(f"Image extraction {success_status} summary for {summary.get('pdf_path', 'N/A')}: "
@@ -253,93 +277,102 @@ class ExtractionReporter:
 
         return summary
 
+    def _save_report_to_file(self, report_text: str, output_dir: str) -> Optional[str]:
+        """Save the report text to a markdown file."""
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+            pdf_basename = os.path.splitext(os.path.basename(self.pdf_path or "report"))[0]
+            report_filename = f"image_extraction_report_{pdf_basename}_{int(time.time())}.md"
+            report_path = os.path.join(output_dir, report_filename)
+
+            with open(report_path, "w", encoding="utf-8") as f:
+                f.write(report_text)
+            
+            logger.info(f"Image extraction report saved to {report_path}")
+            return report_path
+        except Exception as e:
+            logger.error(f"Failed to save extraction report: {str(e)}")
+            return None
+
     def _generate_report_text(self, summary: Dict[str, Any]) -> str:
-        """Generates the markdown report text."""
+        """Generates the markdown report text with diagnostic information."""
+        is_diagnostic_mode = summary['metrics'].get('diagnostic_stats', {}).get('would_be_filtered_count', 0) > 0
+        
         report = [
-            f"# Image Extraction Diagnostic Report",
-            f"PDF: {summary['pdf_path']}",
-            f"Date: {summary['timestamp']}",
-            f"Total time: {summary['total_elapsed_time']:.2f} seconds",
+            f"# Image Extraction {'Diagnostic ' if is_diagnostic_mode else ''}Report",
+            f"**PDF:** {summary['pdf_path']}",
+            f"**Date:** {summary['timestamp']}",
+            f"**Total time:** {summary['total_elapsed_time']:.2f} seconds",
             f"",
             f"## Summary",
             f"- Total identified images in PDF: {summary['metrics'].get('total_images_in_doc', 0)}",
             f"- Attempted extractions: {summary['metrics'].get('attempted_extractions', 0)}",
-            # --- NEW ---
-            f"- Filtered out (icons, blanks, etc.): {summary['metrics'].get('filter_stats', {}).get('total_filtered', 0)}",
-            f"- Successfully extracted & processed: {summary['extracted_count']}",
-            f"- Failed extraction or processing/validation: {summary['failed_count']}",
-            f"- Validation failures (extracted but invalid ImageIssueType): {summary['metrics'].get('validation_failures', 0)}",
+            f"- Successfully extracted & processed (saved to disk): {summary['extracted_count']}",
+            f"- Extraction or Processing Failures: {summary.get('failed_count', 0)}",
+        ]
+        
+        # Add diagnostic mode specific summary
+        if is_diagnostic_mode:
+            diagnostic_stats = summary['metrics'].get('diagnostic_stats', {})
+            report.extend([
+                f"",
+                f"### 🔍 Diagnostic Mode Results",
+                f"- **Images that would normally be filtered:** {diagnostic_stats.get('would_be_filtered_count', 0)}",
+                f"  - Would be filtered as blank: {diagnostic_stats.get('would_be_filtered_blank', 0)}",
+                f"  - Would be filtered as icons: {diagnostic_stats.get('would_be_filtered_icon', 0)}",
+                f"  - Would be filtered by size: {diagnostic_stats.get('would_be_filtered_size', 0)}",
+                f"  - Would be filtered as decorative: {diagnostic_stats.get('would_be_filtered_decorative', 0)}",
+                f"- **Extraction failures:** {diagnostic_stats.get('extraction_failures', 0)}",
+            ])
+        
+        report.extend([
             f"- Total problematic images reported: {summary['problematic_count']}",
             f"",
-        ]
+            "## Filter Statistics",
+            f"- Images kept as diagrams: {summary['metrics']['filter_stats'].get('kept_diagrams', 0)}",
+            f"- Images kept as photographs: {summary['metrics']['filter_stats'].get('kept_photos', 0)}",
+            f"- Images kept (unknown type): {summary['metrics']['filter_stats'].get('kept_unknown', 0)}",
+        ])
 
-        # --- NEW SECTION ---
-        filter_stats = summary['metrics'].get('filter_stats', {})
-        if filter_stats:
-            report.append("### Filter & Content Type Breakdown")
-            report.append(f"- Images Filtered Out: {filter_stats.get('total_filtered', 0)}")
-            report.append(f"  - As icon/UI element: {filter_stats.get('filtered_as_icon', 0)}")
-            report.append(f"  - As blank: {filter_stats.get('filtered_as_blank', 0)}")
-            report.append(f"  - By size: {filter_stats.get('filtered_by_size', 0)}")
-            report.append(f"- Images Kept: {summary['extracted_count']}")
-            report.append(f"  - Kept Diagrams: {filter_stats.get('kept_diagrams', 0)}")
-            report.append(f"  - Kept Photographs: {filter_stats.get('kept_photos', 0)}")
-            report.append(f"  - Kept Unknown Type: {filter_stats.get('kept_unknown', 0)}")
-            report.append("")
-
-        report.append(f"## Detailed Metrics")
-        report.append(f"- Successful extractions (PIL image produced): {summary['metrics'].get('successful_extractions', 0)}")
-        report.append(f"- Failed extractions (no PIL image produced): {summary['metrics'].get('failed_extractions', 0)}")
-        report.append(f"- Retry successes (extracted after initial failure): {summary['metrics'].get('retry_successes', 0)}")
-        report.append(f"- Total extraction time (strategy attempts): {summary['metrics'].get('total_extraction_duration', 0.0):.2f} seconds")
-        report.append("")
-        report.append(f"### Issue Type Breakdown (for problematic images)")
-
-        issue_types_counts = summary['metrics'].get('issue_types', {})
-        if issue_types_counts:
-            present_issue_types = {k: v for k, v in issue_types_counts.items() if v > 0}
-            if present_issue_types:
-                for issue_type, count in sorted(present_issue_types.items()):
-                    report.append(f"- {issue_type}: {count}")
-            else:
-                report.append("- No specific issue types recorded with counts > 0.")
-        else:
-             report.append("- No issue type data available.")
-
-        report.append("")
-        report.append("## Problematic Images Details")
+        # Add normal mode filter stats
+        if not is_diagnostic_mode:
+            report.extend([
+                f"- Total filtered out: {summary['metrics']['filter_stats'].get('total_filtered', 0)}",
+                f"  - Filtered as blank: {summary['metrics']['filter_stats'].get('filtered_as_blank', 0)}",
+                f"  - Filtered as icons: {summary['metrics']['filter_stats'].get('filtered_as_icon', 0)}",
+                f"  - Filtered by size: {summary['metrics']['filter_stats'].get('filtered_by_size', 0)}",
+                f"  - Filtered as decorative: {summary['metrics']['filter_stats'].get('filtered_as_decorative', 0)}",
+            ])
+        
+        report.extend([
+            f"",
+            f"## {'Diagnostic Analysis' if is_diagnostic_mode else 'Problematic Images'}",
+        ])
 
         if not summary['problematic_images']:
             report.append("No problematic images were identified.")
         else:
             for i, img in enumerate(summary['problematic_images']):
-                report.append(f"### Problematic Image {i+1} (Page {img.get('page', '?')}, Index {img.get('index_on_page', '?')})")
-                report.append(f"- **XREF**: {img.get('xref', 'unknown')}")
+                report.append(f"### Problem {i+1} (Page {img.get('page', '?')}, Index {img.get('index_on_page', '?')})")
                 report.append(f"- **Issue**: {img.get('issue', 'Unknown issue')}")
-                report.append(f"- **Issue Type**: {img.get('issue_type', 'unknown')}")
-
-                ext_info = img.get('extraction_info', {})
-                report.append(f"- **Extraction Attempts**: {ext_info.get('attempt_count', 0)}")
-                if ext_info.get('attempts'):
-                     report.append("  - **Attempt History**:")
-                     for attempt_idx, attempt in enumerate(ext_info['attempts']):
-                         status = 'SUCCESS' if attempt.get('success') else 'FAILED'
-                         duration = attempt.get('duration', 0.0)
-                         attempt_num_str = attempt.get('attempt_num', attempt_idx + 1)
-                         report.append(f"    - Attempt {attempt_num_str}: Strategy='{attempt.get('strategy', 'unknown')}', Status={status}, Duration={duration:.4f}s")
-                         if attempt.get('error'):
-                             report.append(f"      - Error: {attempt['error']}")
-
-                val_info = img.get('validation_info', {})
-                if val_info:
-                    report.append(f"- **Validation Details**: {val_info}")
+                
+                # Add diagnostic information if available
+                if img.get('diagnostic_reason'):
+                    report.append(f"- **Diagnostic Info**: {img['diagnostic_reason']}")
+                
+                # Add technical details
+                if img.get('xref'):
+                    report.append(f"- **Reference ID**: {img['xref']}")
+                
                 report.append("") 
 
-        report.append("## Errors Log")
-        if summary.get('errors'):
-            for error_msg in summary['errors']:
-                report.append(f"- {error_msg}")
-        else:
-            report.append("No specific errors were logged.")
+        # Add extraction performance details
+        if summary['metrics'].get('retry_successes', 0) > 0:
+            report.extend([
+                f"",
+                f"## Extraction Performance",
+                f"- Successful retries: {summary['metrics']['retry_successes']}",
+                f"- Average extraction time: {summary['metrics']['total_extraction_duration'] / max(1, summary['metrics']['attempted_extractions']):.3f}s per image",
+            ])
 
         return "\n".join(report)

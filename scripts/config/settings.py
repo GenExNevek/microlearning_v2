@@ -45,12 +45,18 @@ IMAGE_EXTRACTION_CONFIG = {
     "retry_failed_extractions": True, # Enable retries across different strategies
     "max_extraction_retries": 3,      # Max total retries for a single image (Note: current RetryCoordinator tries each strategy once; this might be for future use or a higher-level retry mechanism)
     
+    # === DIAGNOSTIC MODE CONFIGURATION ===
+    "diagnostic_mode_enabled": False,  # Enable diagnostic mode globally
+    "diagnostic_log_level": "INFO",    # Log level for diagnostic messages: DEBUG, INFO, WARNING
+    "diagnostic_save_all_images": True, # Save all images in diagnostic mode regardless of filters
+    
     # Configuration for specific strategies (can be added as needed)
     # e.g., "alternate_colorspace_options": ["RGB", "GRAY"],
     # e.g., "compression_retry_threshold": 0.5,
 
     # Configuration for ImageProcessor validation
     "validate_images": True,       # Enable image validation after saving
+    "min_file_size": 256,          # Minimum file size in bytes (lowered from 1024 for simple graphics)
 
     # Configuration for ExtractionReporter
     "report_path": "reports",      # Default sub-directory for reports within output_dir (can be overridden)
@@ -63,9 +69,15 @@ IMAGE_EXTRACTION_CONFIG = {
 IMAGE_FILTER_CONFIG = {
     'FILTER_BLANK_IMAGES': True,
     'FILTER_UI_ELEMENTS': True,
+    'FILTER_DECORATIVE_BANNERS': True,  # Added for enhanced filtering
     'MIN_MEANINGFUL_IMAGE_WIDTH': 50,
     'MIN_MEANINGFUL_IMAGE_HEIGHT': 50,
     'MAX_ICON_AREA_PX': 4096,  # Area of a 64x64 image
+    
+    # === DIAGNOSTIC MODE SPECIFIC SETTINGS ===
+    'DIAGNOSTIC_MODE_ENABLED': False,  # Override to enable diagnostic mode for filtering
+    'DIAGNOSTIC_INCLUDE_ANALYSIS_DETAILS': True,  # Include detailed analysis in diagnostic reasons
+    'DIAGNOSTIC_SHOW_THRESHOLD_VALUES': True,     # Show actual threshold values in reasons
 }
 
 # -- Correlation Engine --
