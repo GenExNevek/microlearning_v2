@@ -69,7 +69,7 @@ class ImageExtractor:
 
     def extract_images_from_pdf(self, pdf_path: str, output_dir: str, diagnostic_mode: bool = None) -> Dict[str, Any]:
         """
-        Extract all images from a PDF file and save them to the specified directory.
+        Enhanced image extraction with consistent numbering and better metadata tracking.
         
         Args:
             pdf_path: Path to the PDF file to process
@@ -106,94 +106,127 @@ class ImageExtractor:
             return self.reporter.finalize_report(output_dir)
 
         pdf_document = None
+        image_counter = 0
+        extraction_metadata = {}
+
         try:
             pdf_document = fitz.open(pdf_path)
-            image_counter = 0
+            
+            # Track extraction metadata for better correlation
+            extraction_metadata = {
+                'total_pages': len(pdf_document),
+                'images_per_page': {},
+                'extraction_order': [],
+            }
 
             for page_num in range(len(pdf_document)):
                 page = pdf_document[page_num]
                 image_list = page.get_images(full=True)
+                
+                # Track images per page for metadata
+                extraction_metadata['images_per_page'][page_num + 1] = len(image_list)
+                logger.debug(f"Processing page {page_num + 1}: found {len(image_list)} images")
 
+                # Enhanced extraction loop with consistent numbering
                 for img_index, img_info in enumerate(image_list):
                     self.reporter.track_image_attempt(img_info)
+                    
+                    # Enhanced extraction metadata
+                    extraction_context = {
+                        'global_image_counter': image_counter + 1,  # Prospective counter
+                        'page_number': page_num + 1,  # 1-indexed page number
+                        'index_on_page': img_index,   # 0-indexed position on page
+                        'total_images_on_page': len(image_list),
+                    }
 
-                    # Attempt extraction using retry coordinator
                     extracted_image, extraction_info = self.retry_coordinator.coordinate_extraction(
                         pdf_document,
                         img_info,
-                        page_num + 1,
-                        img_index,
-                        {'global_image_counter': image_counter + 1}
+                        page_num + 1,  # Pass 1-indexed page number
+                        img_index,     # Pass 0-indexed image position
+                        extraction_context
                     )
-                    
-                    image_counter += 1
-                    image_filename = f"fig{image_counter}-page{page_num + 1}-img{img_index + 1}.{self.image_processor.image_format}"
-                    image_path = os.path.join(output_dir, image_filename)
 
                     if extracted_image is not None and extraction_info.get('success', False):
-                        # Analyse the extracted image
                         analysis_result = self.image_analyser.analyse_image(extracted_image)
-                        
-                        # Apply filter logic (in diagnostic mode, this provides reasons but doesn't filter)
                         should_keep, filter_reason = self.image_filter.should_keep_image(analysis_result)
                         
-                        # Log diagnostic information
-                        if current_diagnostic_mode:
-                            diagnostic_log_level = self.config.get('diagnostic_log_level', 'INFO').upper()
-                            log_message = f"DIAGNOSTIC - Image '{image_filename}': {filter_reason}"
-                            
-                            if diagnostic_log_level == 'DEBUG':
-                                logger.debug(log_message)
-                            elif diagnostic_log_level == 'WARNING':
-                                logger.warning(log_message)
-                            else:  # INFO or default
-                                logger.info(log_message)
-                        else:
-                            # Normal mode: respect filter decision
-                            if not should_keep:
-                                logger.debug(f"Image filtered: {filter_reason}")
-                                # Track the filtered image and continue to next image
-                                self.reporter.track_filtered_image(filter_reason, analysis_result)
-                                extracted_image.close()
-                                del extracted_image
-                                continue
-                            else:
+                        if should_keep or current_diagnostic_mode:
+                            if current_diagnostic_mode and not should_keep:
+                                logger.info(f"DIAGNOSTIC - Image on page {page_num + 1}, index {img_index + 1} would be filtered: {filter_reason}")
+                            elif should_keep:
                                 logger.debug(f"Image kept: {filter_reason}")
-                        
-                        # Process and save the image (in diagnostic mode, all images are saved)
-                        processing_result = self.image_processor.process_and_save_image(
-                            extracted_image,
-                            image_path
-                        )
-                        
-                        # Track the extraction result with diagnostic information
-                        self.reporter.track_extraction_result(
-                            extraction_info, 
-                            processing_result, 
-                            analysis_result, 
-                            diagnostic_reason=filter_reason if current_diagnostic_mode else None
-                        )
 
-                        extracted_image.close()
-                        del extracted_image
-                        
-                    else:
-                        # Extraction failed
-                        error_msg = f"DIAGNOSTIC - Failed to extract image: page {page_num+1}, index {img_index}. Info: {extraction_info.get('final_error', 'Unknown error')}"
-                        if current_diagnostic_mode:
-                            logger.info(error_msg)
-                        else:
-                            logger.error(error_msg)
+                            # Increment counter ONLY for kept/saved images
+                            image_counter += 1
                             
+                            # Consistent filename format: fig{counter}-page{page}-img{img_index+1}
+                            image_filename = f"fig{image_counter}-page{page_num + 1}-img{img_index + 1}.{self.image_processor.image_format.lower()}"
+                            output_path = os.path.join(output_dir, image_filename)
+                            
+                            # Enhanced metadata for correlation
+                            enhanced_extraction_info = extraction_info.copy()
+                            enhanced_extraction_info.update({
+                                'figure_number': image_counter,
+                                'display_page': page_num + 1,
+                                'display_index': img_index + 1,
+                                'filename': image_filename,
+                                'relative_position': img_index / max(1, len(image_list) - 1) if len(image_list) > 1 else 0.5,
+                            })
+                            
+                            processing_result = self.image_processor.process_and_save_image(
+                                extracted_image, 
+                                output_path
+                            )
+                            
+                            # Track extraction order for sequential fallback
+                            extraction_metadata['extraction_order'].append({
+                                'figure_number': image_counter,
+                                'page': page_num + 1,
+                                'index': img_index + 1,
+                                'filename': image_filename,
+                                'success': processing_result.get('success', False),
+                            })
+                            
+                            self.reporter.track_extraction_result(
+                                enhanced_extraction_info, 
+                                processing_result,
+                                analysis_result,
+                                diagnostic_reason=filter_reason if current_diagnostic_mode and not should_keep else None
+                            )
+                            
+                            logger.info(f"Successfully extracted and saved: {image_filename}")
+                            
+                        else:
+                            # Normal mode: track filtered images
+                            logger.debug(f"Filtered image on page {page_num + 1}, index {img_index + 1}: {filter_reason}")
+                            self.reporter.track_filtered_image(filter_reason, analysis_result)
+                        
+                        # Clean up image resource
+                        if hasattr(extracted_image, 'close'):
+                            extracted_image.close()
+                        del extracted_image
+                    else:
+                        # Track failed extractions
+                        error_detail = extraction_info.get('final_error', extraction_info.get('error', 'Unknown error'))
+                        logger.warning(f"Failed to extract image on page {page_num + 1}, index {img_index + 1}: {error_detail}")
+                        
+                        failed_info = extraction_info.copy()
+                        failed_info.update({
+                            'page_display': page_num + 1,
+                            'index_display': img_index + 1,
+                        })
+                        
                         processing_result = {
-                            'success': False,
-                            'issue': 'Extraction failed, skipping processing.',
+                            'success': False, 
+                            'issue': f"Extraction failed: {error_detail}",
                             'issue_type': 'processing_skipped_extraction_failed'
                         }
                         self.reporter.track_extraction_result(
-                            extraction_info, 
+                            failed_info,
                             processing_result,
-                            diagnostic_reason=f"[EXTRACTION FAILED] {extraction_info.get('final_error', 'Unknown error')}" if current_diagnostic_mode else None
+                            None, # No analysis result
+                            diagnostic_reason=f"[EXTRACTION FAILED] {error_detail}" if current_diagnostic_mode else None
                         )
 
             if pdf_document:
@@ -222,12 +255,38 @@ class ImageExtractor:
                 
             final_report = self.reporter.finalize_report(output_dir)
             
-            # Add diagnostic mode information to the final report
+            # Add extraction and diagnostic metadata to the final report
+            final_report['extraction_metadata'] = extraction_metadata
             final_report['diagnostic_mode_enabled'] = current_diagnostic_mode
+            
+            if not self.reporter.errors:
+                logger.info(f"Image extraction complete: {image_counter} images successfully extracted from {len(pdf_document) if pdf_document else 'N/A'} pages")
+
             if current_diagnostic_mode:
                 logger.info("🔍 DIAGNOSTIC MODE COMPLETE - Check the extraction report for detailed analysis")
             
             return final_report
+
+    def _create_image_metadata(self, page_num: int, img_index: int, image_counter: int, 
+                              extraction_info: Dict, analysis_result) -> Dict[str, Any]:
+        """Create comprehensive metadata for extracted images to aid correlation."""
+        
+        return {
+            'image_path': extraction_info.get('output_path'),
+            'figure_number': image_counter,
+            'page_number': page_num,  # 1-indexed
+            'index_on_page': img_index + 1,  # 1-indexed for display
+            'internal_index': img_index,  # 0-indexed for correlation
+            'filename': os.path.basename(extraction_info.get('output_path', '')),
+            'extraction_success': extraction_info.get('success', False),
+            'analysis_score': getattr(analysis_result, 'complexity_score', 0) if hasattr(analysis_result, 'complexity_score') else 0,
+            'content_type': getattr(analysis_result, 'detected_content_type', 'unknown') if hasattr(analysis_result, 'detected_content_type') else 'unknown',
+            'dimensions': {
+                'width': getattr(analysis_result, 'width', 0) if hasattr(analysis_result, 'width') else 0,
+                'height': getattr(analysis_result, 'height', 0) if hasattr(analysis_result, 'height') else 0,
+            },
+            'processing_timestamp': extraction_info.get('timestamp'),
+        }
 
     def enable_diagnostic_mode(self):
         """Enable diagnostic mode for this extractor instance."""

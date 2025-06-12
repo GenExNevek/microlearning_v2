@@ -63,38 +63,141 @@ IMAGE_EXTRACTION_CONFIG = {
     "save_report_to_file": True    # Whether the reporter should save the .md report
 }
 
-# === NEW CONFIGURATION SECTIONS ===
-
-# -- Image Analysis and Filtering --
+# === ENHANCED IMAGE PROCESSING CONFIGURATION ===
 IMAGE_FILTER_CONFIG = {
     'FILTER_BLANK_IMAGES': True,
     'FILTER_UI_ELEMENTS': True,
-    'FILTER_DECORATIVE_BANNERS': True,  # Added for enhanced filtering
     'MIN_MEANINGFUL_IMAGE_WIDTH': 50,
     'MIN_MEANINGFUL_IMAGE_HEIGHT': 50,
     'MAX_ICON_AREA_PX': 4096,  # Area of a 64x64 image
     
-    # === DIAGNOSTIC MODE SPECIFIC SETTINGS ===
-    'DIAGNOSTIC_MODE_ENABLED': False,  # Override to enable diagnostic mode for filtering
-    'DIAGNOSTIC_INCLUDE_ANALYSIS_DETAILS': True,  # Include detailed analysis in diagnostic reasons
-    'DIAGNOSTIC_SHOW_THRESHOLD_VALUES': True,     # Show actual threshold values in reasons
+    # Enhanced filtering options
+    'FILTER_DUPLICATE_IMAGES': True,    # Remove likely duplicates
+    'MIN_CONTENT_COMPLEXITY': 0.1,      # Minimum image complexity score
+    'ENABLE_CONTENT_DETECTION': True,    # Detect image content types
 }
 
-# -- Correlation Engine --
+# === ENHANCED CORRELATION ENGINE CONFIGURATION ===
 CORRELATION_CONFIG = {
-    'REQUIRE_MINIMUM_CONFIDENCE': 0.4,
+    # Minimum confidence threshold for accepting matches
+    'REQUIRE_MINIMUM_CONFIDENCE': 0.2,  # Lowered from 0.4 for more permissive matching
+    
+    # Enable sequential fallback when other strategies fail
     'ENABLE_FALLBACK_SEQUENTIAL': True,
-    # Weights for different matching strategies
-    'SEMANTIC_MATCH_WEIGHT': 0.5,
+    
+    # Enable filename-based rescue matching
+    'ENABLE_FILENAME_RESCUE': True,
+    
+    # Enable content-type based matching
+    'ENABLE_CONTENT_TYPE_MATCHING': True,
+    
+    # Weights for different matching strategies (should sum to 1.0)
+    'SEMANTIC_MATCH_WEIGHT': 0.4,
     'CONTEXT_MATCH_WEIGHT': 0.3,
-    'POSITION_PROXIMITY_WEIGHT': 0.15,
-    'VISUAL_SIMILARITY_WEIGHT': 0.05
+    'POSITION_PROXIMITY_WEIGHT': 0.2,
+    'VISUAL_SIMILARITY_WEIGHT': 0.1,
+    
+    # Scoring thresholds for different match types
+    'EXPLICIT_MATCH_SCORE': 1.0,
+    'SEMANTIC_MATCH_THRESHOLD': 0.6,
+    'FILENAME_MATCH_THRESHOLD': 0.4,
+    'SEQUENTIAL_FALLBACK_SCORE': 0.3,
+    
+    # Content analysis settings
+    'CONTEXT_WINDOW_SIZE': 500,  # Characters to analyze around image refs
+    'ENABLE_QUESTION_CONTEXT': True,  # Use question/activity context for matching
+    'ENABLE_PAGE_ESTIMATION': True,   # Use heuristics to estimate page numbers
+    
+    # Debug and logging settings
+    'DEBUG_CORRELATION': False,  # Enable detailed correlation logging
+    'LOG_UNMATCHED_REFERENCES': True,  # Log details about failed matches
+    'SAVE_CORRELATION_REPORT': False,  # Save detailed correlation analysis
 }
 
-# Ensure .env loading messages are useful
-# print(f"Attempting to load .env from: {ENV_PATH}")
-# print(f".env file exists: {os.path.exists(ENV_PATH)}")
-# if GEMINI_API_KEY:
-#     print("GEMINI_API_KEY loaded successfully.")
-# else:
-#     print("GEMINI_API_KEY not found. Please check your .env file and path.")
+# === ENHANCED PLACEHOLDER CONFIGURATION ===
+PLACEHOLDER_CONFIG = {
+    # Types of placeholders to generate
+    'PLACEHOLDER_TYPES': {
+        'thermometer': 'placeholder-thermometer.png',
+        'graph': 'placeholder-graph.png', 
+        'target': 'placeholder-target.png',
+        'diagram': 'placeholder-diagram.png',
+        'table': 'placeholder-table.png',
+        'equation': 'placeholder-equation.png',
+        'missing': 'placeholder-missing.png',
+        'error': 'placeholder-error.png',
+    },
+    
+    # Enhanced alt text for placeholders
+    'ENHANCED_ALT_TEXT': True,
+    'INCLUDE_DIAGNOSTIC_COMMENTS': True,
+    
+    # Fallback behavior
+    'DEFAULT_PLACEHOLDER': 'placeholder-missing.png',
+    'USE_DESCRIPTIVE_PLACEHOLDERS': True,
+}
+
+# === MARKDOWN PROCESSING ENHANCEMENTS ===
+MARKDOWN_PROCESSING_CONFIG = {
+    # Image link processing
+    'ENABLE_MULTI_STRATEGY_MATCHING': True,
+    'ENABLE_CONTENT_AWARE_ANALYSIS': True,
+    'PRESERVE_EXTERNAL_LINKS': True,
+    
+    # Content analysis
+    'EXTRACT_FIGURE_NUMBERS': True,
+    'EXTRACT_PAGE_REFERENCES': True,
+    'ANALYZE_SURROUNDING_CONTEXT': True,
+    
+    # Error handling
+    'GRACEFUL_FAILURE_MODE': True,
+    'DETAILED_ERROR_REPORTING': True,
+    'INCLUDE_DIAGNOSTIC_METADATA': True,
+}
+
+# === DEBUGGING AND DEVELOPMENT ===
+DEBUG_CONFIG = {
+    # Enable various debug modes
+    'DEBUG_IMAGE_CORRELATION': False,
+    'DEBUG_CONTENT_ANALYSIS': False,
+    'DEBUG_FILENAME_PARSING': False,
+    
+    # Output debug information
+    'SAVE_DEBUG_REPORTS': False,
+    'LOG_CORRELATION_DETAILS': True,
+    'LOG_MATCHING_ATTEMPTS': False,
+    
+    # Performance monitoring
+    'TRACK_PROCESSING_TIME': True,
+    'LOG_MEMORY_USAGE': False,
+}
+
+# === VALIDATION AND QUALITY ASSURANCE ===
+VALIDATION_CONFIG = {
+    # Post-processing validation
+    'VALIDATE_IMAGE_LINKS': True,
+    'CHECK_FILE_EXISTENCE': True,
+    'VERIFY_IMAGE_ACCESSIBILITY': True,
+    
+    # Quality thresholds
+    'MIN_SUCCESSFUL_MATCH_RATE': 0.7,  # 70% of images should match
+    'WARN_ON_EXCESSIVE_PLACEHOLDERS': True,
+    'MAX_PLACEHOLDER_RATIO': 0.3,  # Warn if >30% are placeholders
+    
+    # Reporting
+    'GENERATE_QUALITY_REPORT': True,
+    'INCLUDE_MATCH_STATISTICS': True,
+}
+
+# === BACKWARD COMPATIBILITY ===
+# Ensure existing configurations still work
+if not hasattr(globals(), 'IMAGE_EXTRACTION_CONFIG'):
+    IMAGE_EXTRACTION_CONFIG = {
+        "output_format": "PNG",
+        "quality": 95,
+        "dpi": 150,
+        "color_modes": ["RGBA", "RGB", "GRAY"],
+        "validate_images": True,
+        "report_path": "reports",
+        "save_report_to_file": True
+    }
